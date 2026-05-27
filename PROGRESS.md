@@ -1,0 +1,177 @@
+# Development Progress
+
+## Current Status
+
+The project has moved from planning into a runnable first application slice.
+
+## Completed
+
+- Read the product PDF and produced the full implementation plan in `IMPLEMENTATION_PLAN.md`.
+- Cloned key local reference repos into `references/`:
+  - `FootBall-Analytics-MVP`
+  - `Eagle`
+  - `football_analysis`
+  - `Soccer-Analytics`
+  - partial `Football-Analytics-with-Deep-Learning-and-Computer-Vision`
+- Scaffolded the app:
+  - `apps/api` FastAPI backend
+  - `workers/video` Python analysis worker
+  - `apps/web` React/Vite frontend
+  - `data/storage/uploads` and `data/storage/outputs` media folders
+- Built first end-to-end demo flow:
+  - upload/demo video
+  - analysis job creation
+  - progress polling
+  - annotated video generation
+  - tactical tracking preview
+  - possession metrics
+  - phase segmentation
+  - AI-style report output
+- Built the first smooth match workspace UI:
+  - upload and demo controls
+  - processing progress
+  - video playback
+  - animated tactical pitch map
+  - metrics strip
+  - tactical phase panel
+  - report panel
+- Added local development documentation in `README.md`.
+- Added persistent JSON job history in `data/storage/jobs.json`.
+- Added API run listing and run loading:
+  - `GET /runs`
+  - `GET /runs/{run_id}`
+- Added frontend match library for reopening completed analyses.
+- Added artifact links in the workspace for annotated video, tracking JSON, metrics JSON, and report JSON.
+- Added optional YOLO adapter in `workers/video/yolo_adapter.py`.
+- Added engine selection behavior in `workers/video/pipeline.py`:
+  - auto
+  - fallback
+  - yolo
+- Added API capability discovery at `GET /capabilities`.
+- Added frontend capability status and engine-quality panels.
+- Enhanced the analysis UI:
+  - match analysis header with duration, resolution, FPS, and engine
+  - labeled video and tactical-map panes
+  - possession control bar and timeline ticks
+  - phase duration bars
+  - player influence panel
+  - key moments review panel
+  - priority insight deck for the next review focus
+  - zone labels on the tactical pitch
+  - live team-shape hull overlays
+  - clip queue generated from key moments and phases
+  - richer run cards in the match library
+  - stronger panel hierarchy, hover states, and responsive layout
+- Added derived analytics outputs:
+  - top player summaries with distance, max speed, average position, and influence score
+  - key events from possession swings and sustained phase entries
+
+## Verified
+
+- Latest backend production smoke test:
+  - FastAPI TestClient checked `/health`, `/ready`, `/version`, `/capabilities`, `/ai/status`, `/runs`, `/demo-job`, `/analysis-jobs/{job_id}`, `/runs/{run_id}`, and `/runs/{run_id}/ai-summary`.
+- `npm run build`
+- `python -m compileall apps/api workers`
+- API health endpoint: `http://127.0.0.1:8000/health`
+- Web app reachable at `http://127.0.0.1:5173`
+- Demo job completes and returns annotated video output.
+- Restarted API and verified saved run discovery via `/runs`.
+- Restarted web dev server and verified `http://127.0.0.1:5173` is reachable.
+- Created a new demo job after persistence changes and verified it completed with a saved run manifest.
+- Verified `/capabilities` reports the cloned MVP model file exists.
+- Verified the demo job still completes through the fallback engine after YOLO adapter integration.
+- Verified the enhanced UI builds successfully and the dev app remains reachable.
+- Verified a fresh demo run produced 12 player summaries and 5 key moments.
+- Researched sports analytics/video-analysis UI patterns and applied video+timeline, event-linked review, dense dashboard, and coach-ready insight patterns.
+- Shifted the app toward the requested clean report-dashboard style:
+  - light editorial canvas
+  - bold black card borders and offset shadows
+  - sports-green primary accent
+  - report tabs for Match, Timeline, Relations, Team Shapes, Possession, Circulation, Loss Areas, and Pressure
+  - more designed pitch visual with zones, team-shape hulls, and simplified player markers
+- Reworked the first screen into a MatchMind-style overview landing dashboard:
+  - dark purple canvas
+  - compact tile grid
+  - matches analysed, average rating, possession, team width, play style, top influencers, performers, tips, next review, and full report CTA
+  - top navigation bar matching the provided reference direction
+  - overview pulls from the latest analysis run when available and falls back to demo-ready values
+- Converted the UI from a centered mockup into a full-screen web app shell.
+- Replaced the copied report pill row with a unique overview-first module dock:
+  - Overview
+  - Match Review
+  - Timeline
+  - Team Shape
+  - Possession
+  - Pressure Lab
+- Removed the empty grid space caused by the old tab row inside the analysis layout.
+- Connected module navigation:
+  - Overview is the first screen.
+  - Selecting a module loads the latest saved analysis or starts a demo run.
+  - Module selection scrolls to the relevant application section.
+- Added real canvas-based tactical analysis:
+  - pitch markings
+  - thirds labels
+  - team shape areas
+  - player and ball markers
+  - possession ribbon for Timeline/Possession
+  - pressure field overlay for Pressure Lab
+- Enhanced the canvas analysis surface:
+  - metric modes for Shape, Pressure, Possession, Momentum, and Player Load
+  - toggles for shape, trails, zones, heat, and labels
+  - player movement trails
+  - heat/territory layer
+  - richer legend and glass-style canvas controls
+- Added more demo data to the overview dashboard, including play-style labels and a momentum mini-chart.
+- Verified the browser experience with Playwright and saved a screenshot at `data/ui-check.png`.
+- Verified enhanced canvas controls with Playwright and saved a screenshot at `data/canvas-enhanced.png`.
+- Made each analysis module interface distinct:
+  - Match Review: video, canvas, metrics, quality, report, artifacts
+  - Timeline: video, event rail, canvas, moments, phases
+  - Team Shape: large canvas, shape comparison, phases, player influence, report
+  - Possession: canvas, possession control, control flow lanes, events, metrics
+  - Pressure Lab: canvas, pressure verdict, events, player influence, quality
+- Verified all module layouts with Playwright and saved a screenshot at `data/module-layouts.png`.
+- Finalized tab/module styling:
+  - active module states
+  - module-specific canvas heights
+  - consistent panel headers
+  - safe wrapping for long metric values
+  - no horizontal overflow across Overview, Match Review, Timeline, Team Shape, Possession, or Pressure Lab
+- Saved final module screenshot at `data/tabs-final-check.png`.
+- Re-verified all modules after the styling pass through the Playwright skill wrapper:
+  - active state is correct
+  - expected panels render per module
+  - no horizontal overflow remains
+- Completed the backend production pass:
+  - environment-based settings in `apps/api/config.py`
+  - SQLite job/run metadata store in `apps/api/repository.py`
+  - durable run indexing from manifest files
+  - upload extension and size validation
+  - `/ready`, `/version`, and `/ai/status` endpoints
+  - AI report-enrichment boundary that is safe without an API key
+  - single-service static frontend serving from `apps/web/dist`
+  - production-safe frontend API origin with local Vite fallback
+  - Dockerfile, Railway config, and `.env.example`
+- Prepared frontend deployment for Vercel:
+  - root `vercel.json`
+  - `.vercelignore`
+  - `VITE_API_URL`-based production API targeting
+  - deploy docs in `README.md`
+
+## Known Limitations
+
+- Current analytics worker uses a deterministic fallback engine. It is shaped like the production pipeline but does not yet run the real YOLO/Eagle tracking path.
+- The YOLO adapter is implemented but not active because `ultralytics` is not installed yet.
+- Attempted optional CV dependency install with `python -m pip install ultralytics supervision pandas scikit-learn`; PyPI download timed out before completion.
+- Persistence now uses SQLite for metadata and filesystem manifests for heavy artifacts. PostgreSQL/TimescaleDB is still recommended for production-scale match, player, event, and frame-level data.
+- Remaining reference repo clones hit network instability and need retrying later.
+- UI is currently a single match workspace, not a full library/scouting/load platform yet.
+
+## Next Up
+
+- Start swapping the fallback worker for the YOLO/tracker modules from `FootBall-Analytics-MVP` and Eagle-style pitch coordinates.
+- Retry optional CV dependency installation when network is stable.
+- Test `FOOTBALL_ANALYTICS_ENGINE=yolo` on a short real clip.
+- Add real match metadata, teams, players, and opponent setup before processing.
+- Add auth, user/team workspaces, and object storage before public multi-user deployment.
+- Add background worker queueing once processing jobs need to survive container restarts mid-run.

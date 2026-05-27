@@ -1,0 +1,29 @@
+[project]
+name = "football-ai-analytics"
+version = "0.1.0"
+description = "End-to-end football video analytics platform."
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115.0",
+  "uvicorn[standard]>=0.30.0",
+  "python-multipart>=0.0.9",
+  "pydantic>=2.8.0",
+  "opencv-python>=4.10.0.84",
+  "numpy>=1.26.0",
+]
+
+[project.optional-dependencies]
+cv = [
+  "ultralytics>=8.3.0",
+  "supervision>=0.24.0",
+  "pandas>=2.2.0",
+  "scikit-learn>=1.5.0",
+]
+
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["apps*", "workers*"]
+exclude = ["references*", "data*", "node_modules*"]
