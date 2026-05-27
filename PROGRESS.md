@@ -156,6 +156,7 @@ The project has moved from planning into a runnable first application slice.
   - root `vercel.json`
   - `.vercelignore`
   - `VITE_API_URL`-based production API targeting
+  - bundled static demo mode when no backend URL is configured
   - deploy docs in `README.md`
 
 ## Known Limitations

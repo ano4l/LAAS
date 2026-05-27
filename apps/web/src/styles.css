@@ -557,6 +557,45 @@ button:disabled { opacity: 0.55; cursor: progress; }
 }
 .artifact-list a:hover { background: rgba(89,221,195,0.08); border-color: rgba(89,221,195,0.32); }
 .artifact-list svg { color: #59ddc3; }
+.artifact-note {
+  margin: 14px 0 0;
+  color: #9fb0aa;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.demo-video-frame {
+  min-height: 360px;
+  position: relative;
+  overflow: hidden;
+  border-top: 1px solid rgba(255,255,255,0.08);
+  background: radial-gradient(circle at 50% 40%, rgba(88, 72, 246, 0.22), transparent 38%), #070812;
+}
+
+.demo-video-frame .pitch-svg { opacity: 0.75; filter: saturate(0.9); }
+
+.demo-video-frame > div:last-child {
+  position: absolute;
+  left: 22px;
+  right: 22px;
+  bottom: 20px;
+  display: grid;
+  gap: 6px;
+  padding: 16px;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: rgba(7,8,18,0.78);
+  backdrop-filter: blur(16px);
+}
+
+.demo-video-frame strong {
+  font-size: 18px;
+  text-transform: uppercase;
+}
+
+.demo-video-frame span {
+  color: #c7d1ce;
+  line-height: 1.5;
+}
 .player-table, .event-list { margin-top: 16px; display: grid; gap: 10px; }
 .player-row {
   position: relative;

@@ -92,13 +92,15 @@ For Railway:
 
 The repo also includes `vercel.json` for deploying the React/Vite web app from `apps/web`.
 
-Set this Vercel environment variable:
+For a frontend-only demo, do not set `VITE_API_URL`. The app will load bundled static match analytics and all dashboard/modules will work without a backend.
+
+When the Railway/FastAPI backend is deployed, set this Vercel environment variable:
 
 ```bash
 VITE_API_URL=https://your-backend-domain.example
 ```
 
-The video analysis API should stay on Railway or another long-running backend host. Vercel is used here for the web UI, while FastAPI handles uploads, OpenCV processing, media files, and SQLite/object-storage-backed metadata elsewhere.
+The video analysis API should stay on Railway or another long-running backend host. Vercel is used here for the web UI/demo, while FastAPI handles uploads, OpenCV processing, media files, and SQLite/object-storage-backed metadata elsewhere.
 
 ## Optional Real CV Engine
 

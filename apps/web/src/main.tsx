@@ -24,6 +24,7 @@ import "./styles.css";
 
 const configuredApiUrl = import.meta.env.VITE_API_URL?.trim();
 const API = configuredApiUrl || (window.location.port === "5173" ? "http://127.0.0.1:8000" : window.location.origin);
+const DEMO_MODE = !configuredApiUrl && window.location.port !== "5173";
 
 type Job = {
   id: string;
@@ -90,11 +91,19 @@ function App() {
   const fileRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
+    if (DEMO_MODE) {
+      const result = createDemoAnalysis();
+      setJob(demoJob(result, "Static Vercel demo"));
+      setRuns([demoRun(result)]);
+      setCapabilities(demoCapabilities());
+      return;
+    }
     refreshRuns();
     fetch(`${API}/capabilities`).then((res) => res.json()).then(setCapabilities).catch(() => setCapabilities(null));
   }, []);
 
   useEffect(() => {
+    if (DEMO_MODE) return;
     if (!job || job.status === "complete" || job.status === "failed") return;
     const timer = window.setInterval(async () => {
       const next = await fetch(`${API}/analysis-jobs/${job.id}`).then((res) => res.json());
@@ -108,11 +117,33 @@ function App() {
   }, [job?.status]);
 
   async function refreshRuns() {
+    if (DEMO_MODE) {
+      const result = createDemoAnalysis();
+      setRuns([demoRun(result)]);
+      return;
+    }
     const next = await fetch(`${API}/runs`).then((res) => res.json()).catch(() => []);
     setRuns(next);
   }
 
   async function startDemo() {
+    if (DEMO_MODE) {
+      const result = createDemoAnalysis();
+      setBusy(true);
+      setJob({
+        id: "demo-vercel-job",
+        status: "running",
+        stage: "Preparing demo analysis",
+        progress: 0.42,
+        created_at: new Date().toISOString(),
+        result,
+      });
+      window.setTimeout(() => {
+        setJob(demoJob(result, "Loaded static demo"));
+        setBusy(false);
+      }, 550);
+      return;
+    }
     setBusy(true);
     const next = await fetch(`${API}/demo-job`, { method: "POST" }).then((res) => res.json());
     setJob(next);
@@ -120,6 +151,11 @@ function App() {
   }
 
   async function openRun(runId: string) {
+    if (DEMO_MODE) {
+      const result = createDemoAnalysis();
+      setJob(demoJob(result, "Loaded static demo"));
+      return;
+    }
     const result = await fetch(`${API}/runs/${runId}`).then((res) => res.json());
     setJob({
       id: `run-${runId}`,
@@ -147,6 +183,10 @@ function App() {
   }
 
   async function upload(file: File) {
+    if (DEMO_MODE) {
+      await startDemo();
+      return;
+    }
     setBusy(true);
     const body = new FormData();
     body.append("file", file);
@@ -174,7 +214,7 @@ function App() {
           <div className="actions">
             <input ref={fileRef} type="file" accept="video/*" onChange={(event) => event.target.files?.[0] && upload(event.target.files[0])} />
             <button className="ghost" onClick={() => fileRef.current?.click()} disabled={busy}>
-              <Upload size={18} /> Upload clip
+              <Upload size={18} /> {DEMO_MODE ? "Preview upload" : "Upload clip"}
             </button>
             <button className="primary" onClick={startDemo} disabled={busy}>
               <Play size={18} /> Demo analysis
@@ -337,6 +377,129 @@ function demoDashboardData() {
   };
 }
 
+function createDemoAnalysis(): AnalysisResult {
+  const fps = 25;
+  const tracking: Track[] = [];
+  for (let frame = 0; frame <= 300; frame += 10) {
+    const t = frame / fps;
+    tracking.push({
+      frame_idx: frame,
+      timestamp_ms: Math.round(t * 1000),
+      track_id: "ball",
+      object_type: "ball",
+      team: null,
+      x: Number((53 + 31 * Math.sin(t / 2.8)).toFixed(2)),
+      y: Number((34 + 18 * Math.cos(t / 2.1)).toFixed(2)),
+      confidence: 0.86,
+    });
+    for (let idx = 0; idx < 11; idx += 1) {
+      const line = Math.floor(idx / 3);
+      const slot = idx % 3;
+      tracking.push({
+        frame_idx: frame,
+        timestamp_ms: Math.round(t * 1000),
+        track_id: `H${idx + 1}`,
+        object_type: "player",
+        team: "Home",
+        x: Number((18 + line * 16 + 7 * Math.sin(t / 2 + idx)).toFixed(2)),
+        y: Number((12 + slot * 18 + (idx % 2) * 6 + 4 * Math.cos(t / 2.6 + idx)).toFixed(2)),
+        confidence: 0.82,
+      });
+      tracking.push({
+        frame_idx: frame,
+        timestamp_ms: Math.round(t * 1000),
+        track_id: `A${idx + 1}`,
+        object_type: "player",
+        team: "Away",
+        x: Number((88 - line * 15 + 7 * Math.sin(t / 2.2 + idx + 1)).toFixed(2)),
+        y: Number((12 + slot * 18 + (idx % 2) * 6 + 4 * Math.cos(t / 2.4 + idx)).toFixed(2)),
+        confidence: 0.8,
+      });
+    }
+  }
+
+  const phases = [
+    { phase: "Build-Up", start_ms: 0, end_ms: 2600, confidence: 0.78 },
+    { phase: "Progression", start_ms: 2600, end_ms: 6200, confidence: 0.82 },
+    { phase: "Wide Final Attack", start_ms: 6200, end_ms: 9400, confidence: 0.75 },
+    { phase: "Counter Press", start_ms: 9400, end_ms: 12000, confidence: 0.71 },
+  ];
+  const players = [
+    { track_id: "H8", team: "Home", distance_m: 238.5, max_speed_kmh: 28.4, avg_x: 53.2, avg_y: 31.6, influence: 88 },
+    { track_id: "H10", team: "Home", distance_m: 226.2, max_speed_kmh: 27.9, avg_x: 61.8, avg_y: 38.1, influence: 82 },
+    { track_id: "A6", team: "Away", distance_m: 218.8, max_speed_kmh: 26.7, avg_x: 48.4, avg_y: 29.4, influence: 76 },
+    { track_id: "H3", team: "Home", distance_m: 202.1, max_speed_kmh: 25.3, avg_x: 41.9, avg_y: 54.2, influence: 69 },
+  ];
+
+  return {
+    run_id: "vercel-demo",
+    engine: "static_demo",
+    metadata: { filename: "vercel-demo-match.mp4", fps, frame_count: 300, duration_seconds: 12, width: 1280, height: 720 },
+    tracking,
+    metrics: {
+      possession: {
+        home_pct: 58.4,
+        away_pct: 41.6,
+        timeline: phases.map((phase, index) => ({ timestamp_ms: phase.start_ms, team: index === 3 ? "Away" : "Home" })),
+      },
+      teams: {
+        Home: { avg_line_height: 48.6, avg_width: 36.4, compactness: 24.8, distance_estimate_km: 3.1, sprint_count_estimate: 14 },
+        Away: { avg_line_height: 55.2, avg_width: 31.8, compactness: 29.4, distance_estimate_km: 2.7, sprint_count_estimate: 9 },
+      },
+      players,
+      events: [
+        { timestamp_ms: 2600, type: "Phase Entry", team: "Home", description: "Home progressed through the central lane after drawing the first press.", confidence: 0.82 },
+        { timestamp_ms: 6200, type: "Wide Overload", team: "Home", description: "Right-side rotation created a temporary 3v2 overload near the final third.", confidence: 0.77 },
+        { timestamp_ms: 9400, type: "Possession Swing", team: "Away", description: "Away recovered after a loose touch and forced a counter-press moment.", confidence: 0.71 },
+      ],
+      data_quality: { tracking_confidence: 0.84, homography_quality: 0.76, ball_missing_ratio: 0.03, mode: "vercel_static_demo" },
+    },
+    phases,
+    report: {
+      title: "Static Demo Tactical Intelligence Report",
+      summary: "Home controlled the strongest spells through compact central support and right-side rotations. The most valuable review moment is the progression-to-wide-attack sequence, where H8 and H10 create the platform for a final-third entry.",
+      recommendations: [
+        { label: "Protect the progression lane", detail: "Keep the near-side fullback deeper when H8 steps into the half-space so rest defence is not exposed.", confidence: 0.79 },
+        { label: "Review H8 influence clips", detail: "H8 leads the demo influence model through repeated support angles and fast second actions after phase entries.", confidence: 0.84 },
+        { label: "Pressure after loss", detail: "The counter-press moment at 9.4s shows the first recovery wave arriving late, leaving the central lane open.", confidence: 0.73 },
+      ],
+    },
+    files: { annotated_video: "", tracking_json: "", metrics_json: "", report_json: "" },
+  };
+}
+
+function demoJob(result: AnalysisResult, stage: string): Job {
+  return {
+    id: "demo-vercel-job",
+    status: "complete",
+    stage,
+    progress: 1,
+    created_at: new Date().toISOString(),
+    result,
+  };
+}
+
+function demoRun(result: AnalysisResult): RunSummary {
+  return {
+    run_id: result.run_id,
+    created_at: new Date().toISOString(),
+    metadata: result.metadata,
+    metrics: result.metrics,
+    phases: result.phases,
+    report: result.report,
+    files: result.files,
+  };
+}
+
+function demoCapabilities(): Capabilities {
+  return {
+    engines: {
+      fallback: { available: true, description: "Static frontend demo data" },
+      yolo: { available: false, model_exists: false, ultralytics_installed: false, opencv_available: false, model_path: "backend not attached" },
+    },
+  };
+}
+
 function Library({ runs, activeRunId, onOpen }: { runs: RunSummary[]; activeRunId?: string; onOpen: (runId: string) => void }) {
   if (!runs.length) return null;
   return (
@@ -485,6 +648,23 @@ function PressureModule({ result, activeModule }: { result: AnalysisResult; acti
 }
 
 function VideoPane({ result }: { result: AnalysisResult }) {
+  if (!result.files.annotated_video) {
+    return (
+      <div className="video-pane demo-video-pane">
+        <div className="pane-label">
+          <Video size={16} />
+          Demo Match Feed
+        </div>
+        <div className="demo-video-frame">
+          <Pitch result={result} />
+          <div>
+            <strong>Static Vercel Demo</strong>
+            <span>Connect the Railway API to enable real uploads and annotated video playback.</span>
+          </div>
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="video-pane">
       <div className="pane-label">
@@ -1188,6 +1368,7 @@ function ArtifactPanel({ result }: { result: AnalysisResult }) {
   return (
     <section className="panel artifact-panel">
       <h2>Artifacts</h2>
+      {!links.length ? <p className="artifact-note">Static demo mode. Deploy the backend and set `VITE_API_URL` to unlock downloadable artifacts.</p> : null}
       <div className="artifact-list">
         {links.map(([label, href]) => (
           <a key={label} href={`${API}${href}`} target="_blank" rel="noreferrer">
