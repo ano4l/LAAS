@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 .venv/
+.venv-gpu/
 .env
 .vercel/
 node_modules/
@@ -21,3 +22,7 @@ data/*.png
 references/
 skills/
 *.pdf
+models/*.pt
+data/qa/
+
+.vercel

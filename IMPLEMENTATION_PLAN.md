@@ -1,5 +1,7 @@
 # Football AI Analytics App - End-to-End Implementation Plan
 
+Current scope reference (21 October 2026): [docs/ANALYTICS_REQUIREMENTS.md](docs/ANALYTICS_REQUIREMENTS.md) maps both user-supplied Word documents to the required dashboard analytics and records unresolved acceptance tests. The running frontend is React/Vite on Vercel, with Modal API/GPU processing; older technology recommendations below are proposals, not a mandate to rewrite it. Required 45-minute analysis and approved-event analytics remain incomplete; the hosted prototype currently accepts two-minute clips.
+
 ## 1. Product Goal
 
 Build a coach-facing AI football analytics platform that turns raw match footage and structured football data into tactical intelligence:

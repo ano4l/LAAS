@@ -21,10 +21,20 @@ import {
   Wand2,
 } from "lucide-react";
 import "./styles.css";
+import { AnalyticsDashboard } from "./AnalyticsDashboard";
+import type { VideoMeasurements } from "./VideoMeasurements";
+import { ReviewPanel } from "./ReviewPanel";
+import { RealWorkspace, type LibraryRun } from "./RealWorkspace";
+import type { VideoInsights } from "./VideoInsights";
 
 const configuredApiUrl = import.meta.env.VITE_API_URL?.trim();
 const API = configuredApiUrl || (window.location.port === "5173" ? "http://127.0.0.1:8000" : window.location.origin);
-const DEMO_MODE = !configuredApiUrl && window.location.port !== "5173";
+const DEMO_MODE = import.meta.env.VITE_DEMO_MODE === "true";
+const REQUIRE_ACCESS_KEY = import.meta.env.VITE_REQUIRE_ACCESS_KEY === "true";
+const authHeaders = (): Record<string, string> => {
+  const key = sessionStorage.getItem("laas-access-key");
+  return key ? { Authorization: `Bearer ${key}` } : {};
+};
 
 type Job = {
   id: string;
@@ -33,9 +43,11 @@ type Job = {
   progress: number;
   created_at: string;
   source_video?: string;
+  filename?: string;
   result?: AnalysisResult;
   error?: string;
 };
+type LibraryJob = Pick<Job, "id" | "status" | "stage" | "progress" | "created_at" | "source_video" | "error"> & { engine?: string; filename?: string; run_id?: string };
 
 type Track = {
   frame_idx: number;
@@ -48,12 +60,16 @@ type Track = {
   confidence: number;
 };
 
-type AnalysisResult = {
+export type AnalysisResult = {
   run_id: string;
   engine?: string;
-  metadata: { filename: string; fps: number; frame_count: number; duration_seconds: number; width: number; height: number };
+  warnings?: string[];
+  detection_summary?: { tracker?: string; analyzed_frames: number; decoded_frames: number; sample_fps: number; image_size?: number; ball_processing?: string; unique_tracks: number; ball_detected_frames: number; processing_seconds: number; device: string; model: string; detections_by_class: Record<string, number>; tracks: {track_id: string; object_type: string; observations: number; first_seen_ms: number; last_seen_ms: number}[] };
+  metadata: { filename: string; fps: number; frame_count: number; duration_seconds: number; width: number; height: number; sha256?: string };
   tracking: Track[];
   metrics: {
+    video_insights?: VideoInsights;
+    video_measurements?: VideoMeasurements;
     possession: { home_pct: number; away_pct: number; timeline: { timestamp_ms: number; team: string }[] };
     teams: Record<string, { avg_line_height: number; avg_width: number; compactness: number; distance_estimate_km: number; sprint_count_estimate: number }>;
     players?: { track_id: string; team: string; distance_m: number; max_speed_kmh: number; avg_x: number; avg_y: number; influence: number }[];
@@ -62,10 +78,10 @@ type AnalysisResult = {
   };
   phases: { phase: string; start_ms: number; end_ms: number; confidence: number }[];
   report: { title: string; summary: string; recommendations: { label: string; detail: string; confidence: number }[] };
-  files: { annotated_video: string; tracking_json?: string; metrics_json?: string; report_json?: string };
+  files: { annotated_video: string; tracking_json?: string; metrics_json?: string; report_json?: string; manifest_json?: string };
 };
 
-type RunSummary = {
+export type RunSummary = {
   run_id: string;
   created_at: string;
   metadata: AnalysisResult["metadata"];
@@ -73,22 +89,36 @@ type RunSummary = {
   phases: AnalysisResult["phases"];
   report: AnalysisResult["report"];
   files: AnalysisResult["files"];
+  engine?: string;
 };
 
 type Capabilities = {
   engines: {
     fallback: { available: boolean; description: string };
-    yolo: { available: boolean; model_exists: boolean; ultralytics_installed: boolean; opencv_available: boolean; model_path: string };
+    yolo: { blockers?: string[]; available: boolean; compute_provider?: "local" | "modal"; model_exists?: boolean; ultralytics_installed?: boolean; opencv_available?: boolean; model_path?: string };
   };
 };
 
 function App() {
   const [job, setJob] = useState<Job | null>(null);
+  const [activeJob, setActiveJob] = useState<Job | null>(null);
+  const [activeJobError, setActiveJobError] = useState("");
   const [runs, setRuns] = useState<RunSummary[]>([]);
+  const [libraryRuns, setLibraryRuns] = useState<LibraryRun[]>([]);
   const [capabilities, setCapabilities] = useState<Capabilities | null>(null);
   const [activeModule, setActiveModule] = useState("Overview");
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [uploadPct, setUploadPct] = useState<number | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
+  const selectionEpoch = useRef(0);
+  const libraryEpoch = useRef(0);
+  const [selectionLoading, setSelectionLoading] = useState("");
+  const [selectionFailure, setSelectionFailure] = useState("");
+  const [libraryLoading, setLibraryLoading] = useState(true);
+  const [libraryError, setLibraryError] = useState("");
+  const [workspaceOpen, setWorkspaceOpen] = useState(0);
+  const activeProcessing = activeJob?.status === "queued" || activeJob?.status === "running";
 
   useEffect(() => {
     if (DEMO_MODE) {
@@ -98,35 +128,57 @@ function App() {
       setCapabilities(demoCapabilities());
       return;
     }
-    refreshRuns();
-    fetch(`${API}/capabilities`).then((res) => res.json()).then(setCapabilities).catch(() => setCapabilities(null));
+    refreshRuns(true);
+    request<Capabilities>("/capabilities").then(setCapabilities).catch(() => setCapabilities(null));
   }, []);
 
   useEffect(() => {
     if (DEMO_MODE) return;
-    if (!job || job.status === "complete" || job.status === "failed") return;
+    if (!activeJob || activeJob.status === "complete" || activeJob.status === "failed") return;
+    let cancelled = false;
+    let polling = false;
     const timer = window.setInterval(async () => {
-      const next = await fetch(`${API}/analysis-jobs/${job.id}`).then((res) => res.json());
-      setJob(next);
+      if (polling) return;
+      polling = true;
+      try {
+        const next = await request<Job>(`/analysis-jobs/${activeJob.id}`);
+        if (!cancelled) { setActiveJob({ ...next, filename: activeJob.filename }); setActiveJobError(""); setJob(current => current?.id === next.id ? next : current); }
+      } catch (err) { if (!cancelled) setActiveJobError(String(err)); }
+      finally { polling = false; }
     }, 900);
-    return () => window.clearInterval(timer);
-  }, [job]);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [activeJob?.id, activeJob?.status]);
 
-  useEffect(() => {
-    if (job?.status === "complete") refreshRuns();
-  }, [job?.status]);
+  useEffect(() => { if (activeJob?.status === "complete") refreshRuns(); }, [activeJob?.status]);
 
-  async function refreshRuns() {
+  async function refreshRuns(selectInitial = false) {
     if (DEMO_MODE) {
       const result = createDemoAnalysis();
       setRuns([demoRun(result)]);
+      setLibraryLoading(false);
       return;
     }
-    const next = await fetch(`${API}/runs`).then((res) => res.json()).catch(() => []);
-    setRuns(next);
+    const currentLibraryRequest = ++libraryEpoch.current;
+    setLibraryLoading(true); setLibraryError("");
+    try {
+      const library = await request<{ runs: LibraryRun[]; jobs: LibraryJob[] }>("/library");
+      if (currentLibraryRequest !== libraryEpoch.current) return;
+      setLibraryRuns(library.runs);
+      if (selectInitial && selectionEpoch.current === 0) {
+        const next = library.jobs.find(item => item.status === "running" || item.status === "queued") ?? library.jobs.find(item => item.engine === "yolo_bytetrack" && item.status === "complete");
+        if (next) {
+          const epoch = ++selectionEpoch.current; setSelectionLoading("Loading selected clip…");
+          try { const detail = await request<Job>(`/analysis-jobs/${next.id}`); if (next.status === "running" || next.status === "queued") setActiveJob({ ...detail, filename: next.filename }); if (epoch === selectionEpoch.current) setJob(detail); }
+          catch (cause) { if (epoch === selectionEpoch.current) { setError(String(cause)); setSelectionFailure(next.run_id ?? "sample"); } }
+          finally { if (epoch === selectionEpoch.current) setSelectionLoading(""); }
+        } else { const firstReal = library.runs.find(item => item.engine === "yolo_bytetrack"); if (firstReal) await openRun(firstReal.run_id); }
+      }
+    } catch (cause) { if (currentLibraryRequest === libraryEpoch.current) setLibraryError(String(cause)); }
+    finally { if (currentLibraryRequest === libraryEpoch.current) setLibraryLoading(false); }
   }
 
   async function startDemo() {
+    selectionEpoch.current++;
     if (DEMO_MODE) {
       const result = createDemoAnalysis();
       setBusy(true);
@@ -145,9 +197,9 @@ function App() {
       return;
     }
     setBusy(true);
-    const next = await fetch(`${API}/demo-job`, { method: "POST" }).then((res) => res.json());
-    setJob(next);
-    setBusy(false);
+    try { setJob(await request<Job>("/demo-job", { method: "POST" })); }
+    catch (err) { setError(String(err)); }
+    finally { setBusy(false); }
   }
 
   async function openRun(runId: string) {
@@ -156,7 +208,10 @@ function App() {
       setJob(demoJob(result, "Loaded static demo"));
       return;
     }
-    const result = await fetch(`${API}/runs/${runId}`).then((res) => res.json());
+    const epoch = ++selectionEpoch.current; setSelectionLoading("Loading clip…"); setSelectionFailure(""); setError("");
+    const result = await request<AnalysisResult>(`/runs/${runId}`).catch(err => { if (epoch === selectionEpoch.current) { setError(String(err)); setSelectionFailure(runId); } return null; });
+    if (epoch !== selectionEpoch.current) return;
+    setSelectionLoading(""); if (!result) return;
     setJob({
       id: `run-${runId}`,
       status: "complete",
@@ -182,57 +237,139 @@ function App() {
     }, 80);
   }
 
+  async function refreshSelectedResult(runId: string) {
+    if (job?.result?.run_id !== runId) return;
+    const expectedSelection = selectionEpoch.current;
+    const result = await request<AnalysisResult>(`/runs/${runId}`);
+    if (expectedSelection !== selectionEpoch.current) return;
+    setJob(current => current?.result?.run_id === runId ? { ...current, result } : current);
+  }
+
   async function upload(file: File) {
-    if (DEMO_MODE) {
-      await startDemo();
-      return;
-    }
-    setBusy(true);
-    const body = new FormData();
-    body.append("file", file);
-    const next = await fetch(`${API}/videos/upload`, { method: "POST", body }).then((res) => res.json());
-    setJob(next);
-    setBusy(false);
+    if (DEMO_MODE) { setError("This is a demo. Connect the analysis API to upload your footage."); return; }
+    if (busy || activeProcessing || libraryLoading) { setError("Wait for the current upload, analysis or library check to finish. You can browse existing clips while analysis runs."); return; }
+    const uploadSelection = ++selectionEpoch.current; setSelectionLoading(""); setBusy(true); setError(""); setUploadPct(0);
+    try {
+      const body = new FormData(); body.append("file", file);
+      const next = await new Promise<Job>((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", `${API}/videos/upload`);
+        for (const [name, value] of Object.entries(authHeaders())) xhr.setRequestHeader(name, value);
+        xhr.upload.onprogress = event => { if (event.lengthComputable) setUploadPct(Math.round(event.loaded / event.total * 100)); };
+        xhr.onerror = () => reject(new Error("Cannot reach the analysis API. Check that the backend is running."));
+        xhr.onload = () => {
+          try { const payload = JSON.parse(xhr.responseText); if (xhr.status >= 400) reject(new Error(payload.detail || "Upload failed")); else resolve(payload); }
+          catch { reject(new Error("The API returned an invalid response.")); }
+        };
+        xhr.send(body);
+      });
+      setActiveJob({ ...next, filename: file.name }); if (uploadSelection === selectionEpoch.current) setJob(next); setActiveModule("Match Review");
+    } catch (err) { setError(String(err)); }
+    finally { setBusy(false); setUploadPct(null); if (fileRef.current) fileRef.current.value = ""; }
+  }
+
+  async function retry() {
+    if (!job) return;
+    if (activeProcessing || busy) return;
+    const expectedSelection = selectionEpoch.current;
+    try { setError(""); const next = await request<Job>(`/analysis-jobs/${job.id}/retry`, {method: "POST"}); setActiveJob(next); if (expectedSelection === selectionEpoch.current) setJob(next); }
+    catch (err) { setError(String(err)); }
+  }
+
+  async function openSample() {
+    const epoch = ++selectionEpoch.current; setSelectionLoading("Opening full sample…"); setSelectionFailure(""); setError("");
+    try { const sample = await request<Job>("/sample"); if (epoch === selectionEpoch.current) setJob(sample); }
+    catch (err) { if (epoch === selectionEpoch.current) { setError(String(err)); setSelectionFailure("sample"); } }
+    finally { if (epoch === selectionEpoch.current) setSelectionLoading(""); }
   }
 
   return (
-    <main className="app-shell">
-      <aside className="rail">
-        <div className="mark"><Radar size={22} /></div>
-        <button title="Match workspace"><Video size={20} /></button>
-        <button title="Team performance"><Activity size={20} /></button>
-        <button title="Players"><Users size={20} /></button>
-        <button title="AI reports"><Bot size={20} /></button>
-      </aside>
+    <main className={`app-shell ${!job?.result || job.result.engine === "yolo_bytetrack" ? "real-app" : ""}`}>
 
       <section className="workspace">
         <header className="topbar">
           <div>
-            <p className="eyebrow">Football AI Analytics</p>
+            <p className="eyebrow">LAAS / ANALYSIS WORKSPACE</p>
             <h1>Match Intelligence Studio</h1>
           </div>
           <div className="actions">
-            <input ref={fileRef} type="file" accept="video/*" onChange={(event) => event.target.files?.[0] && upload(event.target.files[0])} />
-            <button className="ghost" onClick={() => fileRef.current?.click()} disabled={busy}>
-              <Upload size={18} /> {DEMO_MODE ? "Preview upload" : "Upload clip"}
+            {!DEMO_MODE && <button className="ghost" onClick={openSample} disabled={busy}>Open sample · 30s</button>}
+            <input ref={fileRef} type="file" aria-label="Upload football video" accept=".mp4,.mov,.avi,.mkv,.webm,.m4v" onChange={(event) => event.target.files?.[0] && upload(event.target.files[0])} />
+            <button className="primary" onClick={() => fileRef.current?.click()} disabled={busy || activeProcessing || libraryLoading} title={activeProcessing ? "One video is processing. Browse saved results while it finishes." : libraryLoading ? "Checking existing analyses before accepting another upload." : "Upload football footage"}>
+              <Upload size={18} /> {uploadPct !== null ? `Uploading ${uploadPct}%` : "Upload video"}
             </button>
-            <button className="primary" onClick={startDemo} disabled={busy}>
+            {!REQUIRE_ACCESS_KEY && <button className="ghost demo-action" onClick={startDemo} disabled={busy}>
               <Play size={18} /> Demo analysis
-            </button>
+            </button>}
           </div>
         </header>
 
-        <Progress job={job} capabilities={capabilities} />
+        {uploadPct !== null && <p className="notice" role="status">Uploading footage · {uploadPct}%. Another upload is disabled until this job finishes. You can keep browsing saved clips.</p>}
+        {activeJob && <div className={`active-job-banner ${activeProcessing ? "processing" : "finished"}`} role="status"><div><strong>{activeProcessing ? "Analysis running in the background" : activeJob.status === "complete" ? "Your analysis is ready" : "Analysis needs attention"}</strong><span>{activeJob.filename ?? activeJob.result?.metadata.filename ?? "Uploaded video"} · {activeProcessing ? `${activeJob.stage} · ${Math.round(activeJob.progress * 100)}% · One analysis at a time; saved clips remain available.` : activeJob.status === "complete" ? "Open the full result to review it." : activeJob.error}</span>{activeJobError && <span>Could not refresh status. Retrying automatically. {activeJobError}</span>}</div><button className="ghost" onClick={() => { selectionEpoch.current++; setSelectionLoading(""); setJob(activeJob); setWorkspaceOpen(value => value + 1); }}>Open {activeProcessing ? "processing job" : "result"}</button>{!activeProcessing && <button className="ghost" onClick={() => setActiveJob(null)}>Dismiss status</button>}</div>}
+        {error && <p className="notice error" role="alert">{error} {selectionFailure && <button className="ghost" onClick={() => selectionFailure === "sample" ? openSample() : openRun(selectionFailure)}>Retry clip selection</button>}</p>}
+        {job?.error && <div className="notice error" role="alert">{job.error} {!REQUIRE_ACCESS_KEY && <button className="ghost" onClick={retry}>Retry analysis</button>}</div>}
+        {!DEMO_MODE && (!job?.result || job.result.engine === "yolo_bytetrack") && <RealWorkspace result={job?.result ?? null} runs={libraryRuns} onOpen={openRun} onSample={openSample} onUpload={() => fileRef.current?.click()} uploadDisabled={busy || activeProcessing || libraryLoading} openRequest={workspaceOpen} api={API} authHeaders={authHeaders} selectionLoading={selectionLoading} libraryLoading={libraryLoading} libraryError={libraryError} onRefresh={() => refreshRuns(!job)} onRefreshResult={refreshSelectedResult} />}
+        {job?.result && job.result.engine !== "yolo_bytetrack" && <p className="notice">DEMO DATA — synthetic analytics for interface exploration.</p>}
 
-        <OverviewDashboard runs={runs} activeResult={job?.result} onDemo={startDemo} busy={busy} />
+        {job?.result && job.result.engine !== "yolo_bytetrack" && <><OverviewDashboard runs={runs} activeResult={job?.result} onDemo={startDemo} busy={busy} />
         <ModuleDock activeModule={activeModule} hasAnalysis={Boolean(job?.result)} onSelect={selectModule} busy={busy} />
 
-        <Library runs={runs} activeRunId={job?.result?.run_id} onOpen={openRun} />
+        </>}
+        {job?.result && job.result.engine !== "yolo_bytetrack" && <Library runs={runs} activeRunId={job?.result?.run_id} onOpen={openRun} />}
 
-        {job?.result && activeModule !== "Overview" ? <Analysis job={job} activeModule={activeModule} /> : null}
+        {job?.result && job.result.engine !== "yolo_bytetrack" && activeModule !== "Overview" ? <Analysis job={job} activeModule={activeModule} /> : null}
       </section>
     </main>
   );
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers);
+  for (const [name, value] of Object.entries(authHeaders())) headers.set(name, value);
+  const response = await fetch(`${API}${path}`, { ...init, headers });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.detail || `API request failed (${response.status})`);
+  }
+  return response.json();
+}
+
+function RealAnalysis({ result }: { result: AnalysisResult }) {
+  const video = useRef<HTMLVideoElement>(null);
+  const summary = result.detection_summary!;
+  const [filter, setFilter] = useState("");
+  return <section className="real-analysis" id="analysis">
+    <div className="panel"><p className="eyebrow">Real model output · unreviewed</p><h2>Detection and tracking</h2>
+      <p>{result.report.summary}</p>
+      <div className="detection-stats">
+        <div><strong>{summary.unique_tracks}</strong><span>Temporary tracks</span></div>
+        <div><strong>{summary.analyzed_frames.toLocaleString()}</strong><span>Frames analyzed at {summary.sample_fps.toFixed(1)} fps</span></div>
+        <div><strong>{summary.ball_detected_frames}</strong><span>Frames with ball candidates</span></div>
+        <div><strong>{summary.processing_seconds.toFixed(1)}s</strong><span>Processing · {"gpu" in summary ? String(summary.gpu) : summary.device}</span></div>
+      </div>
+      <p>Model: {summary.model} · Tracker: {summary.tracker ?? "Not recorded in this run"} · Detector input: {summary.image_size ?? "unknown"} px · Source: {result.metadata.width} × {result.metadata.height} · {result.metadata.duration_seconds.toFixed(1)} seconds</p>
+    </div>
+    <div className="video-pane"><div className="pane-label"><Video size={16} /> Annotated video · detections are unreviewed</div>
+      <video key={result.run_id} ref={video} controls preload="metadata" src={`${API}${result.files.annotated_video}`} />
+    </div>
+    <ReviewPanel key={result.run_id} runId={result.run_id} duration={result.metadata.duration_seconds} api={API} authHeaders={authHeaders} />
+    <div className="panel"><h2>What the model found</h2><p>Counts are observations across frames, not counts of different people. Ball candidate coverage is not an accuracy score; candidates can include false positives.</p>
+      <div className="detection-stats">{Object.entries(summary.detections_by_class).map(([label, count]) => <div key={label}><strong>{count.toLocaleString()}</strong><span>{label} detections</span></div>)}</div>
+      <label>Find a track <input className="track-filter" value={filter} onChange={e => setFilter(e.target.value)} placeholder="Track ID or object class" /></label>
+      <div className="track-table"><table><thead><tr><th>Track</th><th>Class</th><th>Observations</th><th>First seen</th><th>Last seen</th><th>Review</th></tr></thead><tbody>
+        {summary.tracks.filter(t => `${t.track_id} ${t.object_type}`.toLowerCase().includes(filter.toLowerCase())).slice(0, 100).map(track => <tr key={track.track_id}>
+          <td>{track.track_id}</td><td>{track.object_type}</td><td>{track.observations}</td><td>{(track.first_seen_ms / 1000).toFixed(1)}s</td><td>{(track.last_seen_ms / 1000).toFixed(1)}s</td>
+          <td><button className="ghost" onClick={() => { if (video.current) { video.current.currentTime = track.first_seen_ms / 1000; video.current.scrollIntoView({behavior: "smooth", block: "center"}); } }}>Show in video</button></td>
+        </tr>)}
+      </tbody></table></div><p>Showing up to 100 matching tracks. Full detections are in the JSON download.</p>
+    </div>
+    <div className="panel"><h2>Analysis limits</h2><ul>{result.warnings?.map(warning => <li key={warning}>{warning}</li>)}</ul></div>
+    <div className="panel"><h2>Download results</h2><div className="actions">
+      <a className="ghost" href={`${API}${result.files.tracking_json}`} target="_blank" rel="noreferrer">Tracking JSON</a>
+      <a className="ghost" href={`${API}${result.files.annotated_video}`} target="_blank" rel="noreferrer">Annotated MP4</a>
+      <a className="ghost" href={result.files.manifest_json ? `${API}${result.files.manifest_json}` : `${API}/runs/${result.run_id}`} target="_blank" rel="noreferrer">Full analysis JSON</a>
+    </div></div>
+  </section>;
 }
 
 function OverviewDashboard({ runs, activeResult, onDemo, busy }: { runs: RunSummary[]; activeResult?: AnalysisResult; onDemo: () => void; busy: boolean }) {
@@ -513,7 +650,7 @@ function Library({ runs, activeRunId, onOpen }: { runs: RunSummary[]; activeRunI
           <button className={run.run_id === activeRunId ? "run active" : "run"} key={run.run_id} onClick={() => onOpen(run.run_id)}>
             <span className="run-kicker">{new Date(run.created_at).toLocaleDateString()}</span>
             <strong>{run.metadata?.filename ?? run.run_id}</strong>
-            <span>{run.metrics?.possession?.home_pct ?? 0}% home possession</span>
+            <span>{run.metrics?.data_quality?.mode === "yolo_bytetrack" ? "Real object tracking" : "Synthetic demo"}</span>
           </button>
         ))}
       </div>
@@ -528,13 +665,14 @@ function Progress({ job, capabilities }: { job: Job | null; capabilities: Capabi
     <div className="progress-wrap">
       <div>
         <span>{job ? job.stage : "Ready"}</span>
-        <strong>{job ? `${pct}%` : yolo?.available ? "YOLO ready" : "Fallback ready"}</strong>
+        <strong>{job ? `${pct}%` : yolo?.available ? "Detection ready" : "Analysis unavailable"}</strong>
       </div>
       <div className="progress-track"><div style={{ width: `${pct}%` }} /></div>
+      {yolo?.blockers?.length ? <p role="status">{yolo.blockers.join(" ")}</p> : null}
       {yolo && (
         <div className="capability-line">
-          <span>{yolo.available ? "YOLO engine available" : "YOLO engine pending dependencies"}</span>
-          <span>model {yolo.model_exists ? "found" : "missing"} / ultralytics {yolo.ultralytics_installed ? "installed" : "missing"}</span>
+          <span>{yolo.compute_provider === "modal" ? (yolo.available ? "Modal GPU configured" : "Modal connection required") : (yolo.available ? "YOLO engine available" : "YOLO engine pending dependencies")}</span>
+          <span>{yolo.compute_provider === "modal" ? "Clips up to 2 minutes / 250 MiB" : `model ${yolo.model_exists ? "found" : "missing"} / ultralytics ${yolo.ultralytics_installed ? "installed" : "missing"}`}</span>
         </div>
       )}
     </div>
@@ -1412,4 +1550,29 @@ function demoDots(): Track[] {
   }));
 }
 
-createRoot(document.getElementById("root")!).render(<App />);
+function PrivateWorkspace() {
+  const [unlocked, setUnlocked] = useState(!REQUIRE_ACCESS_KEY || Boolean(sessionStorage.getItem("laas-access-key")));
+  const [key, setKey] = useState("");
+  const [error, setError] = useState("");
+  const [checking, setChecking] = useState(false);
+  if (unlocked) return <App />;
+  return <main style={{ maxWidth: 580, margin: "12vh auto", padding: 24 }}><section className="panel">
+    <p className="eyebrow">Private workspace</p><h1>Match Intelligence Studio</h1>
+    <p>Enter your workspace access key to upload footage and review analyses.</p>
+    <form onSubmit={async event => {
+      event.preventDefault(); setChecking(true); setError("");
+      try {
+        const response = await fetch(`${API}/capabilities`, { headers: { Authorization: `Bearer ${key.trim()}` } });
+        if (!response.ok) throw new Error("Access key was not accepted.");
+        sessionStorage.setItem("laas-access-key", key.trim()); setUnlocked(true);
+      } catch (err) { setError(err instanceof TypeError ? "Cannot reach the analysis service. Try again shortly." : String(err)); }
+      finally { setChecking(false); }
+    }}>
+      <label>Workspace access key <input type="password" autoComplete="off" value={key} onChange={e => setKey(e.target.value)} required style={{ display: "block", width: "100%", margin: "12px 0", padding: 12 }} /></label>
+      <button className="primary" disabled={checking}>{checking ? "Checking…" : "Open workspace"}</button>
+      {error && <p role="alert">{error}</p>}
+    </form>
+  </section></main>;
+}
+
+createRoot(document.getElementById("root")!).render(<PrivateWorkspace />);

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
+import shutil
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -17,7 +20,8 @@ from apps.api.ai import enrich_report, provider_status
 from apps.api.config import ROOT, settings
 from apps.api.repository import Repository, utc_now
 from workers.video.pipeline import run_analysis
-from workers.video.yolo_adapter import yolo_capabilities
+from workers.video.compute import analysis_capabilities as yolo_capabilities
+from workers.video.real_analysis import video_metadata
 
 
 JobStatus = Literal["queued", "running", "complete", "failed"]
@@ -37,6 +41,7 @@ app.mount("/media/outputs", StaticFiles(directory=settings.output_dir), name="ou
 
 ACTIVE_JOBS: dict[str, dict] = {}
 LOCK = threading.Lock()
+WORKER = ThreadPoolExecutor(max_workers=1, thread_name_prefix="video-analysis")
 
 
 class JobResponse(BaseModel):
@@ -54,6 +59,14 @@ class JobResponse(BaseModel):
 def startup() -> None:
     repository.init()
     repository.index_existing_manifests()
+    # A single local worker retries interrupted jobs from their saved input.
+    for record in repository.unfinished_jobs():
+        job = _job_from_record(record)
+        job.update(status="queued", stage="Resuming after restart", progress=0.0)
+        with LOCK:
+            ACTIVE_JOBS[job["id"]] = job
+        path = Path(job["input_path"])
+        WORKER.submit(_process_job, job["id"], path, path.name == "demo-match.mp4")
 
 
 @app.get("/health")
@@ -69,6 +82,7 @@ def ready() -> dict:
         "database": str(settings.database_path),
         "storage": str(settings.storage_root),
         "engine": settings.football_analytics_engine,
+        "storage_free_gib": round(shutil.disk_usage(settings.storage_root).free / 1024**3, 2),
     }
 
 
@@ -86,6 +100,9 @@ def capabilities() -> dict:
         },
         "limits": {"max_upload_mb": settings.max_upload_mb, "allowed_video_suffixes": sorted(ALLOWED_VIDEO_SUFFIXES)},
         "ai": provider_status(),
+        "analysis": {"synthetic_upload_fallback": False, "worker_concurrency": 1,
+                     "event_detection": False, "pitch_calibration": False,
+                     "automatic_video_insights": True, "event_candidate_method": "unreviewed_temporal_geometry"},
     }
 
 
@@ -96,6 +113,9 @@ def ai_status() -> dict:
 
 @app.post("/videos/upload", response_model=JobResponse)
 def upload_video(background_tasks: BackgroundTasks, file: UploadFile = File(...)) -> dict:
+    caps = yolo_capabilities(ROOT)
+    if not caps["available"]:
+        raise HTTPException(status_code=503, detail=" ".join(caps["blockers"]))
     original_name = file.filename or "clip.mp4"
     suffix = Path(original_name).suffix.lower() or ".mp4"
     if suffix not in ALLOWED_VIDEO_SUFFIXES:
@@ -104,10 +124,18 @@ def upload_video(background_tasks: BackgroundTasks, file: UploadFile = File(...)
     job_id = uuid4().hex
     target = settings.upload_dir / f"{job_id}{suffix}"
     _save_upload(file, target)
+    try:
+        metadata = video_metadata(target)
+        if os.getenv("ANALYSIS_COMPUTE", "local") == "modal":
+            from workers.video.modal_policy import validate_video
+            validate_video(target, metadata)
+    except ValueError as exc:
+        target.unlink(missing_ok=True)
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     job = _new_job(job_id, target)
     _register_job(job)
-    background_tasks.add_task(_process_job, job_id, target)
+    WORKER.submit(_process_job, job_id, target)
     return _public_job(job)
 
 
@@ -117,7 +145,7 @@ def create_demo_job(background_tasks: BackgroundTasks) -> dict:
     job_id = uuid4().hex
     job = _new_job(job_id, demo)
     _register_job(job)
-    background_tasks.add_task(_process_job, job_id, demo)
+    WORKER.submit(_process_job, job_id, demo, True)
     return _public_job(job)
 
 
@@ -144,6 +172,22 @@ def get_job(job_id: str) -> dict:
     return _public_job(_job_from_record(record, include_result=True))
 
 
+@app.post("/analysis-jobs/{job_id}/retry", response_model=JobResponse)
+def retry_job(job_id: str) -> dict:
+    record = repository.get_job(job_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Analysis job not found")
+    if record["status"] != "failed":
+        raise HTTPException(status_code=409, detail="Only failed jobs can be retried")
+    path = Path(record["input_path"])
+    if not path.is_file():
+        raise HTTPException(status_code=410, detail="Source video is no longer available")
+    job = _new_job(uuid4().hex, path)
+    _register_job(job)
+    WORKER.submit(_process_job, job["id"], path, path.name == "demo-match.mp4")
+    return _public_job(job)
+
+
 @app.get("/runs")
 def list_runs() -> list[dict]:
     repository.index_existing_manifests()
@@ -156,12 +200,88 @@ def list_runs() -> list[dict]:
     return runs
 
 
+@app.get('/library')
+def library() -> dict:
+    from apps.api.library import compact_job, compact_run
+    # Startup and successful processing index manifests. Browsing does not reopen
+    # every full tracking manifest or backfill measurements for unrelated clips.
+    rows = repository.list_runs()
+    by_id = {row['run_id']: row for row in rows}
+    with LOCK:
+        active = {identity: dict(job) for identity, job in ACTIVE_JOBS.items()}
+    entries = []
+    for record in repository.list_jobs():
+        job = active.get(record['id']) or record
+        entries.append(compact_job(job, by_id.get(job.get('run_id'))))
+    return dict(runs=[compact_run(row, row['created_at']) for row in rows], jobs=entries)
+
+
+@app.get("/sample")
+def sample_run() -> dict:
+    registry = settings.output_dir / "sample.json"
+    if not registry.is_file():
+        raise HTTPException(404, "Sample has not been prepared yet")
+    sample = json.loads(registry.read_text(encoding="utf-8"))
+    manifest = _read_manifest(sample["run_id"])
+    if not manifest:
+        raise HTTPException(404, "Sample run not found")
+    return dict(id=sample["id"], status="complete", stage="Complete", progress=1,
+                created_at=sample["created_at"], result=manifest, error=None)
+
+
 @app.get("/runs/{run_id}")
 def get_run(run_id: str) -> dict:
     manifest = _read_manifest(run_id)
     if not manifest:
         raise HTTPException(status_code=404, detail="Run not found")
     return manifest
+
+
+REVIEW_LOCK=threading.RLock()
+
+
+@app.get('/runs/{run_id}/sequence-context')
+def get_sequence_context(run_id:str):
+    from workers.video.sequence_context import load_context
+    with REVIEW_LOCK:
+        path,manifest=_review_location(run_id)
+        return load_context(path.with_name('sequence-context.json'),manifest)
+
+
+@app.post('/runs/{run_id}/sequence-context')
+def put_sequence_context(run_id:str,payload:dict):
+    from workers.video.sequence_context import save_context
+    from workers.video.event_review import ReviewConflict
+    with REVIEW_LOCK:
+        path,manifest=_review_location(run_id)
+        try:return save_context(path.with_name('sequence-context.json'),manifest,payload)
+        except ReviewConflict as exc:raise HTTPException(409,str(exc)) from exc
+        except ValueError as exc:raise HTTPException(422,str(exc)) from exc
+
+
+def _review_location(run_id):
+    manifest=_read_manifest(run_id)
+    if not manifest:raise HTTPException(404,'Run not found')
+    if manifest.get('engine')!='yolo_bytetrack':raise HTTPException(422,'Only real video runs can be reviewed')
+    return settings.output_dir/run_id/'review.json',manifest
+
+
+@app.get('/runs/{run_id}/review')
+def get_review(run_id:str):
+    from workers.video.event_review import load_review
+    with REVIEW_LOCK:
+        path,manifest=_review_location(run_id)
+        return load_review(path,manifest)
+
+
+@app.post('/runs/{run_id}/review')
+def put_review(run_id:str,payload:dict):
+    from workers.video.event_review import save_review,ReviewConflict
+    with REVIEW_LOCK:
+        path,manifest=_review_location(run_id)
+        try:return save_review(path,manifest,payload)
+        except ReviewConflict as exc:raise HTTPException(409,str(exc)) from exc
+        except ValueError as exc:raise HTTPException(422,str(exc)) from exc
 
 
 @app.post("/runs/{run_id}/ai-summary")
@@ -172,7 +292,7 @@ def ai_summary(run_id: str) -> dict:
     return enrich_report(manifest.get("report", {}))
 
 
-def _process_job(job_id: str, path: Path) -> None:
+def _process_job(job_id: str, path: Path, demo: bool = False) -> None:
     def progress(stage: str, pct: float) -> None:
         patch = {"stage": stage, "progress": round(pct, 3), "status": "running"}
         with LOCK:
@@ -181,15 +301,7 @@ def _process_job(job_id: str, path: Path) -> None:
 
     try:
         progress("Starting", 0.02)
-        previous_engine = os.environ.get("FOOTBALL_ANALYTICS_ENGINE")
-        os.environ["FOOTBALL_ANALYTICS_ENGINE"] = settings.football_analytics_engine
-        try:
-            result = run_analysis(path, settings.output_dir, progress)
-        finally:
-            if previous_engine is None:
-                os.environ.pop("FOOTBALL_ANALYTICS_ENGINE", None)
-            else:
-                os.environ["FOOTBALL_ANALYTICS_ENGINE"] = previous_engine
+        result = run_analysis(path, settings.output_dir, progress, demo=demo)
 
         repository.upsert_run(result, job_id=job_id)
         patch = {"status": "complete", "stage": "Complete", "progress": 1.0, "run_id": result.get("run_id"), "error": None}
@@ -198,6 +310,7 @@ def _process_job(job_id: str, path: Path) -> None:
             ACTIVE_JOBS[job_id]["result"] = result
         repository.update_job(job_id, **patch)
     except Exception as exc:  # pragma: no cover - keeps the API loop alive for user-facing failures
+        logging.getLogger(__name__).exception("Analysis job %s failed", job_id)
         patch = {"status": "failed", "stage": "Failed", "error": str(exc)}
         with LOCK:
             ACTIVE_JOBS[job_id].update(patch)
@@ -246,14 +359,24 @@ def _job_from_record(record: dict, include_result: bool = False) -> dict:
 
 
 def _read_manifest(run_id: str | None) -> dict | None:
-    if not run_id:
+    if not run_id or not run_id.isalnum():
         return None
     record = repository.get_run_record(run_id)
     manifest_path = Path(record["manifest_path"]) if record else settings.output_dir / run_id / "manifest.json"
     if not manifest_path.exists():
         return None
     try:
-        return json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if manifest.get("engine") == "yolo_bytetrack" and not manifest.get("metrics", {}).get("video_measurements"):
+            from workers.video.measurements import from_tracking
+            manifest["metrics"]["video_measurements"] = from_tracking(
+                json.loads((manifest_path.parent / "tracking.json").read_text(encoding="utf-8")),
+                manifest["metadata"], manifest["detection_summary"])
+            (manifest_path.parent / "metrics.json").write_text(json.dumps(manifest["metrics"]), encoding="utf-8")
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        from workers.video.insights import ensure_insights
+        ensure_insights(manifest, manifest_path.parent)
+        return manifest
     except json.JSONDecodeError:
         return None
 

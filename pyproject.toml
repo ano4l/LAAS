@@ -10,14 +10,16 @@ dependencies = [
   "pydantic>=2.8.0",
   "opencv-python>=4.10.0.84",
   "numpy>=1.26.0",
+  "python-dotenv>=1.0.0",
 ]
 
 [project.optional-dependencies]
+modal = ["modal==1.6.2"]
+dev = ["pytest>=8", "httpx>=0.28"]
 cv = [
-  "ultralytics>=8.3.0",
-  "supervision>=0.24.0",
-  "pandas>=2.2.0",
-  "scikit-learn>=1.5.0",
+  "ultralytics==8.4.178",
+  "lap>=0.5.12",
+  "imageio-ffmpeg>=0.6.0",
 ]
 
 [build-system]
@@ -27,3 +29,6 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 include = ["apps*", "workers*"]
 exclude = ["references*", "data*", "node_modules*"]
+
+[tool.pytest.ini_options]
+addopts = "-p no:xonsh"

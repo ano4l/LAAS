@@ -1,0 +1,72 @@
+[
+  {
+    "dataset": "abdelrahmanatef01/input-vid",
+    "remote_file": "input_vid.mp4",
+    "local": "data\\qa\\kaggle-2026-10-24\\input_vid.mp4",
+    "sha256": "9576625af216aee968372a00715e64ffe42ef074e3212b75be071853207d96f6",
+    "metadata": {
+      "filename": "input_vid.mp4",
+      "fps": 24.0038253108065,
+      "frame_count": 753,
+      "duration_seconds": 31.37,
+      "width": 848,
+      "height": 480
+    }
+  },
+  {
+    "dataset": "abdelrahmanatef01/input-vid",
+    "remote_file": "Untitled design.mp4",
+    "local": "data\\qa\\kaggle-2026-10-24\\untitled_design.mp4",
+    "sha256": "f24380bb93a9aefe1eaaceec6b085f45a0493fe54684f37e58487a16b7431929",
+    "metadata": {
+      "filename": "untitled_design.mp4",
+      "fps": 30.0,
+      "frame_count": 509,
+      "duration_seconds": 16.966666666666665,
+      "width": 1920,
+      "height": 1080
+    }
+  },
+  {
+    "dataset": "saberghaderi/-dfl-bundesliga-460-mp4-videos-in-30sec-csv",
+    "remote_file": "DFL Bundesliga Data Shootout/test/test (1).mp4",
+    "local": "data\\qa\\kaggle-2026-10-24\\dfl_test_1.mp4",
+    "sha256": "6a4c690b7283110b2b22181bed911fd9a8b19806777c30901b15518cbd5e4e98",
+    "metadata": {
+      "filename": "dfl_test_1.mp4",
+      "fps": 25.0,
+      "frame_count": 750,
+      "duration_seconds": 30.0,
+      "width": 1920,
+      "height": 1080
+    }
+  },
+  {
+    "dataset": "saberghaderi/-dfl-bundesliga-460-mp4-videos-in-30sec-csv",
+    "remote_file": "DFL Bundesliga Data Shootout/test/test (10).mp4",
+    "local": "data\\qa\\kaggle-2026-10-24\\dfl_test_10.mp4",
+    "sha256": "6e9682d412feab90eb9ba2a4b4fae85232c51d712b6c9f1cbe9117a8f882d4cb",
+    "metadata": {
+      "filename": "dfl_test_10.mp4",
+      "fps": 25.0,
+      "frame_count": 750,
+      "duration_seconds": 30.0,
+      "width": 1920,
+      "height": 1080
+    }
+  },
+  {
+    "dataset": "saberghaderi/-dfl-bundesliga-460-mp4-videos-in-30sec-csv",
+    "remote_file": "DFL Bundesliga Data Shootout/test/test (11).mp4",
+    "local": "data\\qa\\kaggle-2026-10-24\\dfl_test_11.mp4",
+    "sha256": "4960126742d27471438750d5f7d01c9243c79c49c63b53da4affcd82daf66c93",
+    "metadata": {
+      "filename": "dfl_test_11.mp4",
+      "fps": 25.0,
+      "frame_count": 750,
+      "duration_seconds": 30.0,
+      "width": 1920,
+      "height": 1080
+    }
+  }
+]

@@ -13,7 +13,7 @@ COPY . .
 RUN npm install \
     && npm --prefix apps/web install \
     && python -m pip install --upgrade pip \
-    && python -m pip install -e .
+    && python -m pip install -e '.[cv]'
 RUN npm run build
 
 EXPOSE 8000

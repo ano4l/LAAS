@@ -97,6 +97,11 @@ class Repository:
             row = db.execute("SELECT * FROM analysis_jobs WHERE id = ?", (job_id,)).fetchone()
         return dict(row) if row else None
 
+    def unfinished_jobs(self) -> list[dict[str, Any]]:
+        with self.connect() as db:
+            rows = db.execute("SELECT * FROM analysis_jobs WHERE status IN ('queued', 'running') ORDER BY created_at").fetchall()
+        return [dict(row) for row in rows]
+
     def list_jobs(self) -> list[dict[str, Any]]:
         with self.connect() as db:
             rows = db.execute("SELECT * FROM analysis_jobs ORDER BY created_at DESC LIMIT 100").fetchall()

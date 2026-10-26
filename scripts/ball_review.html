@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>Ball detection review</title>
+<style>
+body{margin:24px;background:#101916;color:#e7efe9;font:16px system-ui}button{padding:10px;margin:4px;cursor:pointer}canvas{max-width:100%;height:auto;outline:1px solid #788b80;touch-action:none}canvas.zoom{max-width:none}p{max-width:1000px}#status{font-weight:bold}button:focus-visible{outline:3px solid #70e6ba}
+</style>
+<h1>Review ball positions</h1>
+<p>Drag tight boxes around every visible match ball. Ignore logos, spectators and graphics. Save a reviewed empty frame only when no ball is visible. Leave uncertain frames unreviewed. Boxes use original-image pixels. Download labels before closing this page; edits are kept in memory only.</p>
+<div><button id="prev">Previous</button><button id="next">Next</button><button id="zoom" aria-pressed="false">Full-resolution zoom</button><button id="clear">Clear boxes / unreview</button><button id="review">Mark reviewed</button><button id="skip">Mark uncertain</button><button id="save">Download labels.json</button></div>
+<p id="status"></p><canvas id="canvas"></canvas>
+<script>
+const labels = __LABELS_JSON__;
+let index=0, start=null, loaded=false;
+const canvas=document.querySelector('#canvas'), ctx=canvas.getContext('2d'), image=new Image();
+function draw(){
+ if(!loaded)return;ctx.drawImage(image,0,0);ctx.strokeStyle='#ff543d';ctx.lineWidth=2;
+ for(const [x1,y1,x2,y2] of labels.frames[index].boxes)ctx.strokeRect(x1,y1,x2-x1,y2-y1);
+ const f=labels.frames[index];document.querySelector('#status').textContent=`${index+1}/${labels.frames.length} · Frame ${f.frame_idx} · ${f.boxes.length} boxes · ${f.reviewed?'REVIEWED':'UNREVIEWED'} · ${labels.frames.filter(f=>f.reviewed).length} reviewed total`;
+}
+function show(){loaded=false;start=null;image.src=labels.frames[index].image;}
+image.onload=()=>{canvas.width=image.naturalWidth;canvas.height=image.naturalHeight;loaded=true;draw()};
+image.onerror=()=>{document.querySelector('#status').textContent='Image failed to load. Keep this HTML beside its frame PNG files.'};
+function point(e){const r=canvas.getBoundingClientRect();return [Math.max(0,Math.min(canvas.width,(e.clientX-r.left)*canvas.width/r.width)),Math.max(0,Math.min(canvas.height,(e.clientY-r.top)*canvas.height/r.height))]}
+canvas.onpointerdown=e=>{if(!loaded)return;start=point(e);canvas.setPointerCapture(e.pointerId)};
+canvas.onpointerup=e=>{if(!start||!loaded)return;const end=point(e);const box=[Math.min(start[0],end[0]),Math.min(start[1],end[1]),Math.max(start[0],end[0]),Math.max(start[1],end[1])].map(Math.round);start=null;if(box[2]>box[0]&&box[3]>box[1]){labels.frames[index].boxes.push(box);labels.frames[index].reviewed=false;}draw()};
+canvas.onpointercancel=()=>start=null;
+document.querySelector('#prev').onclick=()=>{index=Math.max(0,index-1);show()};
+document.querySelector('#next').onclick=()=>{index=Math.min(labels.frames.length-1,index+1);show()};
+document.querySelector('#clear').onclick=()=>{labels.frames[index].boxes=[];labels.frames[index].reviewed=false;draw()};
+document.querySelector('#review').onclick=()=>{if(loaded){labels.frames[index].reviewed=true;draw()}};
+document.querySelector('#skip').onclick=()=>{labels.frames[index].reviewed=false;draw()};
+document.querySelector('#zoom').onclick=e=>{const zoom=canvas.classList.toggle('zoom');e.target.setAttribute('aria-pressed',String(zoom));e.target.textContent=zoom?'Fit to window':'Full-resolution zoom'};
+document.querySelector('#save').onclick=()=>{const url=URL.createObjectURL(new Blob([JSON.stringify(labels,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='labels.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000)};
+window.onbeforeunload=e=>{e.preventDefault();e.returnValue='Download your labels before leaving'};
+show();
+</script></html>

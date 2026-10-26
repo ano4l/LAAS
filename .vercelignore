@@ -13,3 +13,11 @@ node_modules
 apps/web/node_modules
 .env
 .venv
+.venv-gpu
+deploy
+tests
+pyproject.toml
+Dockerfile
+.env*
+models
+docs

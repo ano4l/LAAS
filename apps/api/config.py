@@ -3,9 +3,11 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from dotenv import load_dotenv
 
 
 ROOT = Path(__file__).resolve().parents[2]
+load_dotenv(ROOT / ".env")
 
 
 def _csv_env(name: str, default: str) -> list[str]:
@@ -48,8 +50,8 @@ def load_settings() -> Settings:
         upload_dir=upload_dir,
         output_dir=output_dir,
         database_path=database_path,
-        max_upload_mb=int(os.getenv("MAX_UPLOAD_MB", "750")),
-        football_analytics_engine=os.getenv("FOOTBALL_ANALYTICS_ENGINE", "auto"),
+        max_upload_mb=int(os.getenv("MAX_UPLOAD_MB", "4096")),
+        football_analytics_engine="yolo_bytetrack",
         openai_api_key=os.getenv("OPENAI_API_KEY") or None,
     )
 

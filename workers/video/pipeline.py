@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import math
-import os
 import shutil
 import time
 from dataclasses import asdict, dataclass
@@ -34,13 +33,18 @@ class TrackPoint:
     confidence: float
 
 
-def run_analysis(input_video: Path, output_root: Path, progress: Progress | None = None) -> dict:
-    """Generate first-pass football analytics artifacts for one uploaded clip.
-
-    The worker is intentionally production-shaped: it writes stable JSON artifacts
-    that the API/UI consume today, while leaving a narrow seam for replacing the
-    synthetic fallback with YOLO/Eagle-style tracking when model runtime is ready.
-    """
+def run_analysis(input_video: Path, output_root: Path, progress: Progress | None = None, *, demo: bool = False) -> dict:
+    """Real uploads use the detector; synthetic analytics require explicit demo=True."""
+    if not demo:
+        import os
+        provider = os.getenv("ANALYSIS_COMPUTE", "local")
+        if provider == "modal":
+            from workers.video.modal_client import run_modal_analysis
+            return run_modal_analysis(input_video, output_root, progress)
+        if provider != "local":
+            raise ValueError("ANALYSIS_COMPUTE must be local or modal")
+        from workers.video.real_analysis import run_real_analysis
+        return run_real_analysis(input_video, output_root, progress)
     run_id = uuid4().hex[:10]
     out_dir = output_root / run_id
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -48,7 +52,7 @@ def run_analysis(input_video: Path, output_root: Path, progress: Progress | None
     _tick(progress, "Reading video", 0.08)
     metadata = _video_metadata(input_video)
 
-    analysis = _try_real_engine(input_video, output_root, progress)
+    analysis = None  # Synthetic data is available only through the explicit demo endpoint.
     if analysis:
         metadata = analysis["metadata"]
         tracking = analysis["tracking"]
@@ -193,21 +197,6 @@ def _classify_phases(tracking: list[dict]) -> list[dict]:
         current["end_ms"] = ball[-1]["timestamp_ms"] if ball else 0
         phases.append(current)
     return phases
-
-
-def _try_real_engine(input_video: Path, output_root: Path, progress: Progress | None) -> dict | None:
-    engine_pref = os.getenv("FOOTBALL_ANALYTICS_ENGINE", "auto").lower()
-    if engine_pref == "fallback":
-        return None
-    try:
-        from workers.video.yolo_adapter import try_run_yolo_analysis
-
-        root = output_root.parents[2]
-        return try_run_yolo_analysis(input_video, root, progress)
-    except Exception:
-        if engine_pref == "yolo":
-            raise
-        return None
 
 
 def _build_metrics(tracking: list[dict], phases: list[dict], fps: float, data_quality: dict | None = None) -> dict:
