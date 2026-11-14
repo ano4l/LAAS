@@ -7,7 +7,7 @@ from collections import Counter, defaultdict
 from itertools import groupby
 import math
 
-VERSION = "video-insights-3"
+VERSION = "video-insights-4"
 PLAYERS = {"player", "goalkeeper", "person"}
 BALLS = {"ball", "sports ball"}
 
@@ -41,7 +41,8 @@ class VideoInsights:
         selected = ([r for r in balls if r.get("ball_selected")]
                     if any("ball_selected" in r for r in balls) else balls)
         ball = None
-        if len(selected) == 1 and selected[0]["confidence"] >= .25:
+        # A weak detection is used only when the offline ball path placed it between confident ones.
+        if len(selected) == 1 and (selected[0]["confidence"] >= .25 or selected[0].get("ball_path_support")):
             r = selected[0]
             a, b, c, d = r["bbox"]
             ball = dict(x=(a+c)/2, y=(b+d)/2, confidence=r["confidence"],

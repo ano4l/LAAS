@@ -6,7 +6,8 @@ estimated interval, but no ball coordinates are generated for those gaps.
 from collections import Counter, defaultdict
 import math
 
-VERSION = "temporal-possession-1"
+VERSION = "temporal-possession-2"
+RETENTION_MAX_GAP_SECONDS = 5.0
 
 
 def percentage(n, d):
@@ -200,6 +201,29 @@ def infer_sequences(frames, metadata, sample_fps, context=None):
             review_status='unreviewed',source=VERSION,
             evidence='Observed departure and supported receiver; bounded continuity checks. Ball gaps remain unobserved; event and team possession are estimates.'))
 
+    # Team retention: a team keeps possession from one of its controlled touches to its
+    # next one, unless something in between says otherwise. This is the usual football
+    # definition, but here it is an inference: an opponent touch the detector missed
+    # would be wrong, so it is bounded in time, kept as its own state and totalled apart.
+    retained_pairs = 0
+    for a, b in zip(anchors, anchors[1:]):
+        gap = b['start_seconds'] - a['end_seconds']
+        if (a['scene_id'] != b['scene_id'] or not a['team'] or a['team'] != b['team']
+                or gap <= 1e-7 or gap > RETENTION_MAX_GAP_SECONDS):
+            continue
+        if any(x < b['start_seconds'] and y > a['end_seconds'] for x, y in context.get('dead_ball_intervals', [])):
+            continue
+        span = range(a['indices'][-1] + 1, b['indices'][0])
+        if any(evidence[i]['scene'] is not None and evidence[i]['scene'] != a['scene_id'] for i in span):
+            continue
+        filled = False
+        for index in span:
+            if states[index]['state'] == 'unknown':
+                states[index] = dict(state='team_retained', team=a['team'], kit=a['kit'], track_id=None,
+                                     support='same_team_touch_before_and_after')
+                filled = True
+        retained_pairs += filled
+
     # Explicit user-confirmed stoppages split the state partition precisely;
     # absence of a detected ball is never treated as a stoppage.
     stoppages=context.get('dead_ball_intervals',[])
@@ -230,18 +254,31 @@ def infer_sequences(frames, metadata, sample_fps, context=None):
         for x,y in zip(cuts,cuts[1:]):
             dead=any(a<y and b>x for a,b in stoppages)
             append(x,y,dict(state='dead_ball',team=None,kit=None,track_id=None,support='confirmed_context') if dead else state)
-    totals=Counter(); team_totals=Counter(); observed_control=Counter(); flights=Counter(); inferred=Counter()
+    totals=Counter(); team_totals=Counter(); observed_control=Counter(); flights=Counter(); inferred=Counter(); retained=Counter()
     for r in intervals:
         dt=r['end_seconds']-r['start_seconds'];totals[r['state']]+=dt
+        if r['state']=='team_retained':retained[r['team']]+=dt
         if r['team'] and r['state'] in {'controlled','in_transit','control_gap'}:
             team_totals[r['team']]+=dt
             (observed_control if r['state']=='controlled' else flights)[r['team']]+=dt
             if r['support']=='bounded_missing_ball':inferred[r['team']]+=dt
     known=sum(team_totals.values()); dead=totals['dead_ball']; eligible=duration-dead
-    return dict(schema_version=VERSION,review_status='unreviewed',context_revision=context.get('revision',0),
+    # known_seconds, coverage_pct and unknown_seconds keep their meaning (supported control,
+    # flight and short gaps; everything else unknown). Retention is reported beside them,
+    # never folded in, so retained time still counts inside unknown_seconds.
+    with_retention=known+sum(retained.values())
+    retention=dict(max_gap_seconds=RETENTION_MAX_GAP_SECONDS,retained_seconds=round(sum(retained.values()),4),
+        touch_pairs=retained_pairs,known_with_retention_seconds=round(with_retention,4),
+        coverage_with_retention_pct=percentage(with_retention,eligible),
+        by_team=[dict(team=t,retained_seconds=round(retained[t],4),with_retention_seconds=round(team_totals[t]+retained[t],4),
+                      share_with_retention_pct=percentage(team_totals[t]+retained[t],with_retention),
+                      share_of_non_dead_with_retention_pct=percentage(team_totals[t]+retained[t],eligible))
+                 for t in sorted(set(team_totals)|set(retained))],
+        definition='Time between two consecutive controlled touches by the same team, at most max_gap_seconds apart, in one scene, with no confirmed stoppage. Inferred, not observed: a missed opponent touch in between would make it wrong.')
+    return dict(retention=retention,schema_version=VERSION,review_status='unreviewed',context_revision=context.get('revision',0),
         mapping_status='user_confirmed' if mapping else 'anonymous_scene_groups',
         source_duration_seconds=duration,classified_non_dead_seconds=round(eligible,4),
-        known_seconds=round(known,4),unknown_seconds=round(totals['unknown']+sum(r['end_seconds']-r['start_seconds'] for r in intervals if r['state']=='controlled' and not r['team']),4),
+        known_seconds=round(known,4),unknown_seconds=round(totals['unknown']+totals['team_retained']+sum(r['end_seconds']-r['start_seconds'] for r in intervals if r['state']=='controlled' and not r['team']),4),
         contested_seconds=round(totals['contested'],4),dead_ball_seconds=round(dead,4),coverage_pct=percentage(known,eligible),
         by_team=[dict(team=t,estimated_seconds=round(s,4),share_of_known_pct=percentage(s,known),share_of_non_dead_pct=percentage(s,eligible),
                       observed_control_seconds=round(observed_control[t],4),flight_and_gap_seconds=round(flights[t],4),bounded_missing_ball_seconds=round(inferred[t],4)) for t,s in sorted(team_totals.items())],
