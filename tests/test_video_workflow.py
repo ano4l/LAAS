@@ -169,6 +169,10 @@ def test_streaming_preserves_full_duration_and_unknown_identity(tmp_path, monkey
     tracking = json.loads((run / "tracking.json").read_text())
     assert tracking[-1]["timestamp_ms"] == 40000
     assert all(row["team"] is None and row["player_id"] is None for row in tracking)
+    assert all(row["track_id"] == "T7" and row["linked_track_id"] == "L1" for row in tracking)
+    assert measured["track_identity"] == "linked_track_id" and measured["tracks"][0]["track_id"] == "L1"
+    assert summary["linked_tracks"][0]["track_ids"] == ["T7"] and summary["track_linking"]["identities_after"] == 1
+    assert (run / "track-links.json").is_file()
     assert all(row["coordinate_space"] == "image_pixels" for row in tracking)
     output = real_analysis.video_metadata(run / "annotated.mp4")
     assert output["frame_count"] == 1005

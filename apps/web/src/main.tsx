@@ -64,7 +64,9 @@ export type AnalysisResult = {
   run_id: string;
   engine?: string;
   warnings?: string[];
-  detection_summary?: { tracker?: string; analyzed_frames: number; decoded_frames: number; sample_fps: number; image_size?: number; ball_processing?: string; unique_tracks: number; ball_detected_frames: number; processing_seconds: number; device: string; model: string; detections_by_class: Record<string, number>; tracks: {track_id: string; object_type: string; observations: number; first_seen_ms: number; last_seen_ms: number}[] };
+  detection_summary?: { tracker?: string; analyzed_frames: number; decoded_frames: number; sample_fps: number; image_size?: number; ball_processing?: string; unique_tracks: number; ball_detected_frames: number; processing_seconds: number; device: string; model: string; detections_by_class: Record<string, number>; tracks: {track_id: string; object_type: string; observations: number; first_seen_ms: number; last_seen_ms: number}[];
+    track_linking?: { tracks_before: number; identities_after: number; links_accepted: number };
+    linked_tracks?: {linked_track_id: string; track_ids: string[]; object_type: string; team: string | null; observations: number; first_seen_ms: number; last_seen_ms: number}[] };
   metadata: { filename: string; fps: number; frame_count: number; duration_seconds: number; width: number; height: number; sha256?: string };
   tracking: Track[];
   metrics: {
@@ -342,7 +344,7 @@ function RealAnalysis({ result }: { result: AnalysisResult }) {
     <div className="panel"><p className="eyebrow">Real model output · unreviewed</p><h2>Detection and tracking</h2>
       <p>{result.report.summary}</p>
       <div className="detection-stats">
-        <div><strong>{summary.unique_tracks}</strong><span>Temporary tracks</span></div>
+        <div><strong>{summary.track_linking?.identities_after ?? summary.unique_tracks}</strong><span>{summary.track_linking ? `Linked identities · from ${summary.track_linking.tracks_before} tracker tracks` : "Temporary tracks"}</span></div>
         <div><strong>{summary.analyzed_frames.toLocaleString()}</strong><span>Frames analyzed at {summary.sample_fps.toFixed(1)} fps</span></div>
         <div><strong>{summary.ball_detected_frames}</strong><span>Frames with ball candidates</span></div>
         <div><strong>{summary.processing_seconds.toFixed(1)}s</strong><span>Processing · {"gpu" in summary ? String(summary.gpu) : summary.device}</span></div>
