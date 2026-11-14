@@ -1,4 +1,8 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
+import { AlertTriangle, ArrowDownToLine, Clock3, Save } from "lucide-react";
+import { num, secs, sentence, words } from "./format";
+import { usePlayback } from "./playback";
+import { DataTable, Disclosure, EmptyState, EvidenceChip, Field, Pager, Panel, WatchButton } from "./ui";
 
 const outcomes = {
   pass: ["completed", "incomplete", "unknown"], shot: ["goal", "on_target", "off_target", "blocked", "unknown"],
@@ -18,15 +22,14 @@ type ReviewSummary = { scope: string; approved_events: number; draft_events: num
   possession: { home_seconds: number; away_seconds: number; unknown_seconds: number; home_share_pct: number | null; away_share_pct: number | null; known_coverage_pct: number | null } };
 export type Review = { schema_version: string; run_id: string; revision: number; teams: { home: string; away: string }; coverage: [number, number][];
   events: Annotation[]; possession_intervals: Possession[]; summary: ReviewSummary };
-type Props = { runId: string; duration: number; api: string; authHeaders: () => Record<string, string>; onSaved?: (saved: Review | null) => void; onUnsaved?: (unsaved: boolean) => void; onSeek?: (seconds: number) => void; getVideoTime?: () => number; hideSummary?: boolean };
+type Props = { runId: string; duration: number; api: string; authHeaders: () => Record<string, string>; onSaved?: (saved: Review | null) => void; onUnsaved?: (unsaved: boolean) => void };
 type CoverageForm = { start: string; end: string };
 type PossessionForm = CoverageForm & { team: Possession["team"]; approved: boolean };
 type ReviewDraft = { review: Review; saved: Review; event: Annotation; editing: boolean; eventDirty: boolean; coverage: CoverageForm; interval: PossessionForm };
 // Kept in this tab's memory, scoped to API and run. Run navigation must not discard annotation work.
 const reviewDrafts = new Map<string, ReviewDraft>();
 const freshEvent = (): Annotation => ({ id: crypto.randomUUID(), timestamp_seconds: 0, type: "pass", team: "home", player: null, outcome: "unknown", review_status: "draft", notes: "" });
-const words = (text: string) => text.replaceAll("_", " ");
-const num = (value: number | null) => value === null ? "Unknown" : value.toLocaleString(undefined, { maximumFractionDigits: 2 });
+const count = (value: number | null) => value === null ? "Unknown" : value.toLocaleString(undefined, { maximumFractionDigits: 2 });
 const payload = (review: Review) => ({ revision: review.revision, teams: review.teams, coverage: review.coverage, events: review.events, possession_intervals: review.possession_intervals });
 const hasUnsavedDraft = (draft: ReviewDraft) => JSON.stringify(payload(draft.review)) !== JSON.stringify(payload(draft.saved)) || draft.eventDirty || Boolean(draft.coverage.start || draft.coverage.end || draft.interval.start || draft.interval.end || draft.interval.approved || draft.interval.team !== "unknown");
 // The warning belongs to the tab, not the currently mounted run: other runs may hold drafts.
@@ -37,8 +40,8 @@ const warnForReviewDrafts = (event: BeforeUnloadEvent) => {
 window.addEventListener("beforeunload", warnForReviewDrafts);
 if (import.meta.hot) import.meta.hot.dispose(() => window.removeEventListener("beforeunload", warnForReviewDrafts));
 
-export function ReviewPanel({ runId, duration, api, authHeaders, onSaved, onUnsaved, onSeek, getVideoTime, hideSummary }: Props) {
-  const instanceId = useId();
+export function ReviewPanel({ runId, duration, api, authHeaders, onSaved, onUnsaved }: Props) {
+  const playback = usePlayback();
   const [review, setReview] = useState<Review | null>(null);
   const [saved, setSaved] = useState<Review | null>(null);
   const [pending, setPending] = useState(false);
@@ -118,7 +121,6 @@ export function ReviewPanel({ runId, duration, api, authHeaders, onSaved, onUnsa
   }
   function resetEvent() { setEvent(freshEvent()); setEditing(false); setEventDirty(false); }
   function changeEvent(update: Partial<Annotation>) { setEvent(current => ({ ...current, ...update, review_status: update.review_status ?? "draft" })); setEventDirty(true); }
-  function seek(seconds: number) { if (onSeek) { onSeek(seconds); return; } const video = document.querySelector<HTMLVideoElement>(".real-analysis video"); if (video) { video.currentTime = seconds; video.scrollIntoView({ behavior: "smooth", block: "center" }); } }
   function applyEvent(e: FormEvent) {
     e.preventDefault(); if (!review) return;
     if (!Number.isFinite(event.timestamp_seconds) || event.timestamp_seconds < 0 || event.timestamp_seconds >= duration) { setError("Event time must be inside the source video, before its end."); return; }
@@ -130,84 +132,238 @@ export function ReviewPanel({ runId, duration, api, authHeaders, onSaved, onUnsa
   function validateRange(start: string, end: string) {
     if (!start.trim() || !end.trim()) { setError("Enter both interval times in seconds."); return false; }
     const a = Number(start), b = Number(end);
-    if (!Number.isFinite(a) || !Number.isFinite(b) || a < 0 || b <= a || b > duration) { setError(`Intervals must start at or after 0 and end within ${num(duration)} seconds, after their start.`); return false; }
+    if (!Number.isFinite(a) || !Number.isFinite(b) || a < 0 || b <= a || b > duration) { setError(`Intervals must start at or after 0 and end within ${count(duration)} seconds, after their start.`); return false; }
     return true;
   }
 
-  return <section className="review-panel panel" aria-labelledby={instanceId + "-event-review-title"} aria-busy={pending}>
-    <header className="review-panel__header"><div><p className="eyebrow">Human event review</p><h2 id={instanceId + "-event-review-title"}>Review events</h2><p>Record what you can verify. Approval is always your choice.</p></div>
-      <div className="review-panel__save"><span role="status">{pending ? "Working…" : conflict ? "Conflict · edits retained" : dirty || formDirty ? "Unsaved changes" : saved ? `Saved revision ${saved.revision}` : "Review not loaded"}</span><button className="ghost" onClick={save} disabled={pending || !dirty || eventDirty || conflict}>Save review</button><button className="ghost" onClick={downloadSaved} disabled={!saved || pending}>Download saved review JSON</button></div>
-    </header>
-    {error && <p className="review-panel__error" role="alert">{error}</p>}
-    {(conflict || (!review && !pending)) && <button className="ghost" disabled={pending} onClick={() => setReload(value => value + 1)}>{conflict ? "Reload saved review · discard my edits" : "Retry loading review"}</button>}
-    {eventDirty && <p className="review-panel__notice">Apply or cancel the event form before saving the review.</p>}
-    {restored && <p className="review-panel__notice" role="status">Restored your unsaved work for this run. Nothing was automatically saved or approved.</p>}
-    <p className="review-panel__draft-note">Drafts stay in this tab when you switch clips or views. Only Save review persists applied annotations.</p><details className="review-panel__storage"><summary>Draft storage & saved exports</summary><p>Per-run edits and unfinished forms are held in memory until this tab is closed or refreshed. Closing warns if any run has unsaved work. The JSON download contains the last server-saved review, excluding unsaved edits and unfinished forms.</p></details>
-    {review && <>
-      <fieldset disabled={pending} className="review-panel__workspace"><legend>Manual review · {num(duration)}-second source clip</legend>
-        <details className="review-panel__intervals"><summary>Team labels · {review.teams.home || "Home"} / {review.teams.away || "Away"}</summary><div className="review-panel__team-names">{(["home", "away"] as const).map(team => <label key={team}>{team === "home" ? "Home" : "Away"} team name<input maxLength={80} required value={review.teams[team]} onChange={e => edit({ teams: { ...review.teams, [team]: e.target.value } })} /></label>)}</div><p>Enter real team names only when verified. These labels are independent of anonymous model kit groups.</p></details>
-        <form onSubmit={applyEvent} className="review-panel__event-form"><h3>{editing ? "Edit event annotation" : "Add event annotation"}</h3>
-          <div className="review-panel__fields"><label>Video time (seconds)<input type="number" min="0" max={Math.max(0, duration - .000001)} step="any" required value={event.timestamp_seconds} onChange={e => changeEvent({ timestamp_seconds: Number(e.target.value) })} /></label>
-            <button type="button" className="ghost" onClick={() => { const time = getVideoTime ? getVideoTime() : document.querySelector<HTMLVideoElement>(".real-analysis video")?.currentTime; if (time !== undefined) changeEvent({ timestamp_seconds: Math.max(0, Math.min(duration - .001, time)) }); }}>Use video time</button>
-            <label>Event type<select value={event.type} onChange={e => changeEvent({ type: e.target.value as EventType, outcome: "unknown", review_status: "draft" })}>{Object.keys(outcomes).map(type => <option key={type} value={type}>{words(type)}</option>)}</select></label>
-            <label>Team<select value={event.team} onChange={e => changeEvent({ team: e.target.value as Team })}>{(["home", "away"] as const).map(team => <option key={team} value={team}>{review.teams[team] || team}</option>)}</select></label>
-            <label>Outcome<select value={event.outcome} onChange={e => changeEvent({ outcome: e.target.value })}>{outcomes[event.type].map(outcome => <option key={outcome} value={outcome}>{words(outcome)}</option>)}</select></label>
-            <label>Player (optional)<input maxLength={100} value={event.player ?? ""} onChange={e => changeEvent({ player: e.target.value })} placeholder="Verified name or manual label" /></label>
-          </div>
-          <details className="review-panel__notes"><summary>Notes (optional){event.notes && " · added"}</summary><label>Annotation notes<textarea maxLength={1000} rows={2} value={event.notes} onChange={e => changeEvent({ notes: e.target.value })} /></label></details>
-          <label className="review-panel__checkbox"><input type="checkbox" checked={event.review_status === "approved"} onChange={e => changeEvent({ review_status: e.target.checked ? "approved" : "draft" })} />I reviewed this event against the footage and approve this annotation.</label>
-          <div className="review-panel__actions"><button className="ghost" type="submit">{editing ? "Apply event edit" : "Add annotation"}</button><button className="ghost" type="button" onClick={resetEvent}>Cancel event form</button></div>
-        </form>
+  const status = pending ? "Working…" : conflict ? "Conflict · edits retained" : dirty || formDirty ? "Unsaved changes" : saved ? `Saved revision ${saved.revision}` : "Review not loaded";
 
-        <div className="review-panel__event-tools"><label>Find an annotation<input type="search" value={eventSearch} placeholder="Event, player or notes" onChange={e => { setEventSearch(e.target.value); setEventPage(0); }} /></label><label>Review status<select value={statusFilter} onChange={e => { setStatusFilter(e.target.value); setEventPage(0); }}><option value="all">All annotations</option><option value="draft">Draft</option><option value="approved">Approved</option></select></label></div>
-{eventMatches.length > 0 &&         <div className="review-panel__scroll" tabIndex={0} role="region" aria-label="Manual event annotations; scroll to view all columns"><table><thead><tr><th scope="col">Video time</th><th scope="col">Event / outcome</th><th scope="col">Team / player</th><th scope="col">Status</th><th scope="col">Actions</th></tr></thead><tbody>{eventMatches.slice(currentEventPage * 8, (currentEventPage + 1) * 8).map(item => <tr key={item.id}><td><button type="button" className="review-panel__seek" onClick={() => seek(item.timestamp_seconds)}>{num(item.timestamp_seconds)}s · view</button></td><td>{words(item.type)} · {words(item.outcome)}{item.notes && <small>{item.notes}</small>}</td><td>{review.teams[item.team]}<small>{item.player || "Player not identified"}</small></td><td><span className={`studio-status ${item.review_status}`}>{item.review_status === "approved" ? "Approved" : "Draft"}</span></td><td><div className="review-panel__actions"><button type="button" className="ghost" disabled={eventDirty} onClick={() => { setEvent({ ...item }); setEditing(true); }}>Edit</button><button type="button" className="ghost" onClick={() => edit({ events: review.events.map(other => other.id === item.id ? { ...other, review_status: other.review_status === "approved" ? "draft" : "approved" } : other) })}>{item.review_status === "approved" ? "Return to draft" : "Approve event"}</button><button type="button" className="ghost" onClick={() => { edit({ events: review.events.filter(other => other.id !== item.id) }); if (event.id === item.id) resetEvent(); }}>Delete event</button></div></td></tr>)}</tbody></table></div>}
-        {review.events.length > 0 && <div className="studio-pagination"><span>{eventMatches.length} matching annotations · page {currentEventPage + 1} of {lastEventPage + 1}</span><button type="button" className="ghost" disabled={currentEventPage === 0} onClick={() => setEventPage(currentEventPage - 1)}>Previous annotations</button><button type="button" className="ghost" disabled={currentEventPage >= lastEventPage} onClick={() => setEventPage(currentEventPage + 1)}>Next annotations</button></div>}
-        {review.events.length > 0 && !eventMatches.length && <p role="status">No annotations match these filters.</p>}
-        {!review.events.length && <p className="review-panel__notice">No manual event annotations. Add a draft while watching the footage; approval is a separate review choice.</p>}
+  return (
+    <Panel
+      level={2}
+      className="review"
+      title="Review events"
+      subtitle="Record what you can verify against the footage. Approval is always your choice."
+      aside={<>
+        <span className={`chip ${dirty || formDirty || conflict ? "chip--draft" : "chip--plain"}`} role="status">{status}</span>
+        <button type="button" className="btn btn--primary btn--sm" onClick={save} disabled={pending || !dirty || eventDirty || conflict}><Save size={14} aria-hidden="true" /> Save review</button>
+        <button type="button" className="btn btn--secondary btn--sm" onClick={downloadSaved} disabled={!saved || pending} aria-label="Download saved review JSON"><ArrowDownToLine size={14} aria-hidden="true" /> Saved review JSON</button>
+      </>}
+    >
+      <div aria-busy={pending} className="stack">
+        {error && <p className="notice notice--error" role="alert"><AlertTriangle size={16} aria-hidden="true" /><span>{error}</span></p>}
+        {(conflict || (!review && !pending)) && <div><button type="button" className="btn btn--secondary" disabled={pending} onClick={() => setReload(value => value + 1)}>{conflict ? "Reload saved review · discard my edits" : "Retry loading review"}</button></div>}
+        {eventDirty && <p className="note note--boxed note--flood">Apply or cancel the event form before saving the review.</p>}
+        {restored && <p className="note note--boxed note--flood" role="status">Restored your unsaved work for this run. Nothing was automatically saved or approved.</p>}
+        {!review && pending && <p className="notice" role="status"><span className="spinner" aria-hidden="true" /><span>Loading the saved review…</span></p>}
 
-        <details className="review-panel__intervals"><summary>Reviewed footage coverage · optional</summary><p>Record only intervals you have watched and reviewed. The full clip is not presumed reviewed. Overlapping intervals are handled by the server.</p>
-          <form className="review-panel__fields" onSubmit={e => { e.preventDefault(); if (!validateRange(coverage.start, coverage.end)) return; edit({ coverage: [...review.coverage, [Number(coverage.start), Number(coverage.end)]] }); setCoverage({ start: "", end: "" }); setError(""); }}><label>Reviewed start (seconds)<input type="number" min="0" max={duration} step="any" required value={coverage.start} onChange={e => setCoverage({ ...coverage, start: e.target.value })} /></label><label>Reviewed end (seconds)<input type="number" min="0" max={duration} step="any" required value={coverage.end} onChange={e => setCoverage({ ...coverage, end: e.target.value })} /></label><button className="ghost" type="submit">Add reviewed interval</button></form>
-          <ul>{review.coverage.map(([start, end], index) => <li key={index}><span>{num(start)}–{num(end)}s reviewed</span><button type="button" className="ghost" onClick={() => edit({ coverage: review.coverage.filter((_, i) => i !== index) })}>Remove coverage interval</button></li>)}</ul>{!review.coverage.length && <p>No reviewed coverage recorded.</p>}
-        </details>
-        <details className="review-panel__intervals"><summary>Manually reviewed possession intervals · optional</summary><p>Annotate possession from footage, independently of jersey groups and ball proximity. Unknown intervals remain unknown. Draft intervals are excluded from statistics.</p>
-          <form onSubmit={e => { e.preventDefault(); if (!validateRange(interval.start, interval.end)) return; edit({ possession_intervals: [...review.possession_intervals, { id: crypto.randomUUID(), start_seconds: Number(interval.start), end_seconds: Number(interval.end), team: interval.team, review_status: interval.approved ? "approved" : "draft" }] }); setInterval({ start: "", end: "", team: "unknown", approved: false }); setError(""); }}>
-            <div className="review-panel__fields"><label>Possession start (seconds)<input type="number" min="0" max={duration} step="any" required value={interval.start} onChange={e => setInterval({ ...interval, start: e.target.value })} /></label><label>Possession end (seconds)<input type="number" min="0" max={duration} step="any" required value={interval.end} onChange={e => setInterval({ ...interval, end: e.target.value })} /></label><label>Possession team<select value={interval.team} onChange={e => setInterval({ ...interval, team: e.target.value as Possession["team"] })}><option value="unknown">Unknown</option><option value="home">{review.teams.home}</option><option value="away">{review.teams.away}</option></select></label></div>
-            <label className="review-panel__checkbox"><input type="checkbox" checked={interval.approved} onChange={e => setInterval({ ...interval, approved: e.target.checked })} />I reviewed and approve this possession interval.</label><button className="ghost" type="submit">Add possession interval</button>
-          </form>
-          <ul>{review.possession_intervals.map(item => <li key={item.id}><span>{num(item.start_seconds)}–{num(item.end_seconds)}s · {item.team === "unknown" ? "Unknown" : review.teams[item.team]} · {item.review_status}</span><div className="review-panel__actions"><button type="button" className="ghost" onClick={() => seek(item.start_seconds)}>View in video</button><button type="button" className="ghost" onClick={() => edit({ possession_intervals: review.possession_intervals.map(other => other.id === item.id ? { ...other, review_status: item.review_status === "approved" ? "draft" : "approved" } : other) })}>{item.review_status === "approved" ? "Return interval to draft" : "Approve interval"}</button><button type="button" className="ghost" onClick={() => edit({ possession_intervals: review.possession_intervals.filter(other => other.id !== item.id) })}>Delete interval</button></div></li>)}</ul>{!review.possession_intervals.length && <p>No possession intervals recorded.</p>}
-        </details>
-      </fieldset>
-      {saved && !hideSummary && <ApprovedSummary saved={saved} unsaved={dirty || formDirty} />}
-    </>}
-  </section>;
+        {review && (
+          <fieldset disabled={pending} className="review__work">
+            <legend className="sr-only">Manual review · {count(duration)}-second source clip</legend>
+
+            <form onSubmit={applyEvent} className="formcard">
+              <h3 className="formcard__title">{editing ? "Edit event annotation" : "Add event annotation"}</h3>
+              <div className="formgrid">
+                <div className="formgrid__time">
+                  <Field label="Video time (seconds)">
+                    <input type="number" min="0" max={Math.max(0, duration - .000001)} step="any" required value={event.timestamp_seconds} onChange={e => changeEvent({ timestamp_seconds: Number(e.target.value) })} />
+                  </Field>
+                  <button type="button" className="btn btn--secondary" onClick={() => changeEvent({ timestamp_seconds: Math.max(0, Math.min(duration - .001, playback.getTime())) })}><Clock3 size={15} aria-hidden="true" /> Use video time</button>
+                </div>
+                <Field label="Event type">
+                  <select value={event.type} onChange={e => changeEvent({ type: e.target.value as EventType, outcome: "unknown", review_status: "draft" })}>{Object.keys(outcomes).map(type => <option key={type} value={type}>{sentence(type)}</option>)}</select>
+                </Field>
+                <Field label="Team">
+                  <select value={event.team} onChange={e => changeEvent({ team: e.target.value as Team })}>{(["home", "away"] as const).map(team => <option key={team} value={team}>{review.teams[team] || team}</option>)}</select>
+                </Field>
+                <Field label="Outcome">
+                  <select value={event.outcome} onChange={e => changeEvent({ outcome: e.target.value })}>{outcomes[event.type].map(outcome => <option key={outcome} value={outcome}>{sentence(outcome)}</option>)}</select>
+                </Field>
+                <Field label="Player (optional)">
+                  <input maxLength={100} value={event.player ?? ""} onChange={e => changeEvent({ player: e.target.value })} placeholder="Verified name or manual label" />
+                </Field>
+              </div>
+              <p className="note">Team uses your own labels (“{review.teams.home || "Home"}” and “{review.teams.away || "Away"}”), which you can rename under Team labels below. They are separate from the model’s Kit A / Kit B groups and do not map onto them.</p>
+              <Disclosure summary={`Notes (optional)${event.notes ? " · added" : ""}`}>
+                <Field label="Annotation notes"><textarea maxLength={1000} rows={2} value={event.notes} onChange={e => changeEvent({ notes: e.target.value })} /></Field>
+              </Disclosure>
+              <label className="check"><input type="checkbox" checked={event.review_status === "approved"} onChange={e => changeEvent({ review_status: e.target.checked ? "approved" : "draft" })} />I reviewed this event against the footage and approve this annotation.</label>
+              <div className="row">
+                <button className="btn btn--primary" type="submit">{editing ? "Apply event edit" : "Add annotation"}</button>
+                <button className="btn btn--quiet" type="button" onClick={resetEvent}>Cancel event form</button>
+              </div>
+            </form>
+
+            <div className="stack">
+              <h3 className="formcard__title">Annotations</h3>
+              <div className="toolbar">
+                <Field label="Find an annotation"><input type="search" value={eventSearch} placeholder="Event, player or notes" onChange={e => { setEventSearch(e.target.value); setEventPage(0); }} /></Field>
+                <Field label="Review status" className="field--fixed">
+                  <select value={statusFilter} onChange={e => { setStatusFilter(e.target.value); setEventPage(0); }}><option value="all">All annotations</option><option value="draft">Draft</option><option value="approved">Approved</option></select>
+                </Field>
+              </div>
+              {eventMatches.length > 0 && (
+                <DataTable label="Manual event annotations; scroll to view all columns" stack>
+                  <thead><tr><th scope="col">Video time</th><th scope="col">Event / outcome</th><th scope="col">Team / player</th><th scope="col">Status</th><th scope="col">Actions</th></tr></thead>
+                  <tbody>
+                    {eventMatches.slice(currentEventPage * 8, (currentEventPage + 1) * 8).map(item => (
+                      <tr key={item.id}>
+                        <td><WatchButton at={item.timestamp_seconds} describe="View annotation" /></td>
+                        <td data-label="Event"><div>{sentence(item.type)} · {words(item.outcome)}{item.notes && <small>{item.notes}</small>}</div></td>
+                        <td data-label="Team / player"><div>{review.teams[item.team]}<small>{item.player || "Player not identified"}</small></div></td>
+                        <td data-label="Status">{item.review_status === "approved" ? <EvidenceChip level="reviewed" title="Approved by a reviewer" /> : <span className="chip chip--draft">Draft</span>}</td>
+                        <td data-label="Actions">
+                          <div className="row">
+                            <button type="button" className="btn btn--secondary btn--sm" disabled={eventDirty} onClick={() => { setEvent({ ...item }); setEditing(true); }}>Edit</button>
+                            <button type="button" className="btn btn--secondary btn--sm" onClick={() => edit({ events: review.events.map(other => other.id === item.id ? { ...other, review_status: other.review_status === "approved" ? "draft" : "approved" } : other) })}>{item.review_status === "approved" ? "Return to draft" : "Approve event"}</button>
+                            <button type="button" className="btn btn--secondary btn--sm btn--danger" onClick={() => { edit({ events: review.events.filter(other => other.id !== item.id) }); if (event.id === item.id) resetEvent(); }}>Delete event</button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </DataTable>
+              )}
+              {review.events.length > 0 && <Pager page={currentEventPage} pages={lastEventPage + 1} count={eventMatches.length} noun="annotations" onPage={setEventPage} />}
+              {review.events.length > 0 && !eventMatches.length && <p className="note" role="status">No annotations match these filters.</p>}
+              {!review.events.length && <EmptyState title="No manual event annotations yet">Add a draft while watching the footage; approval is a separate review choice.</EmptyState>}
+            </div>
+
+            <Disclosure summary="Team labels" meta={`${review.teams.home || "Home"} / ${review.teams.away || "Away"}`}>
+              <div className="formgrid formgrid--two">
+                {(["home", "away"] as const).map(team => <Field key={team} label={`${team === "home" ? "Home" : "Away"} team name`}><input maxLength={80} required value={review.teams[team]} onChange={e => edit({ teams: { ...review.teams, [team]: e.target.value } })} /></Field>)}
+              </div>
+              <p>Enter real team names only when verified. These labels are independent of the model's anonymous kit groups.</p>
+            </Disclosure>
+
+            <Disclosure summary="Reviewed footage coverage" meta="Optional">
+              <p>Record only intervals you have watched and reviewed. The full clip is not presumed reviewed. Overlapping intervals are handled by the server.</p>
+              <form className="formgrid formgrid--action" onSubmit={e => { e.preventDefault(); if (!validateRange(coverage.start, coverage.end)) return; edit({ coverage: [...review.coverage, [Number(coverage.start), Number(coverage.end)]] }); setCoverage({ start: "", end: "" }); setError(""); }}>
+                <Field label="Reviewed start (seconds)"><input type="number" min="0" max={duration} step="any" required value={coverage.start} onChange={e => setCoverage({ ...coverage, start: e.target.value })} /></Field>
+                <Field label="Reviewed end (seconds)"><input type="number" min="0" max={duration} step="any" required value={coverage.end} onChange={e => setCoverage({ ...coverage, end: e.target.value })} /></Field>
+                <button className="btn btn--secondary" type="submit">Add reviewed interval</button>
+              </form>
+              <ul className="itemlist">
+                {review.coverage.map(([start, end], index) => (
+                  <li key={index}><span className="mono">{count(start)}–{count(end)} s reviewed</span><button type="button" className="btn btn--secondary btn--sm" onClick={() => edit({ coverage: review.coverage.filter((_, i) => i !== index) })}>Remove coverage interval</button></li>
+                ))}
+              </ul>
+              {!review.coverage.length && <p>No reviewed coverage recorded.</p>}
+            </Disclosure>
+
+            <Disclosure summary="Manually reviewed possession intervals" meta="Optional">
+              <p>Annotate possession from footage, independently of jersey groups and ball proximity. Unknown intervals remain unknown. Draft intervals are excluded from statistics.</p>
+              <form className="stack" onSubmit={e => { e.preventDefault(); if (!validateRange(interval.start, interval.end)) return; edit({ possession_intervals: [...review.possession_intervals, { id: crypto.randomUUID(), start_seconds: Number(interval.start), end_seconds: Number(interval.end), team: interval.team, review_status: interval.approved ? "approved" : "draft" }] }); setInterval({ start: "", end: "", team: "unknown", approved: false }); setError(""); }}>
+                <div className="formgrid">
+                  <Field label="Possession start (seconds)"><input type="number" min="0" max={duration} step="any" required value={interval.start} onChange={e => setInterval({ ...interval, start: e.target.value })} /></Field>
+                  <Field label="Possession end (seconds)"><input type="number" min="0" max={duration} step="any" required value={interval.end} onChange={e => setInterval({ ...interval, end: e.target.value })} /></Field>
+                  <Field label="Possession team"><select value={interval.team} onChange={e => setInterval({ ...interval, team: e.target.value as Possession["team"] })}><option value="unknown">Unknown</option><option value="home">{review.teams.home}</option><option value="away">{review.teams.away}</option></select></Field>
+                </div>
+                <label className="check"><input type="checkbox" checked={interval.approved} onChange={e => setInterval({ ...interval, approved: e.target.checked })} />I reviewed and approve this possession interval.</label>
+                <div><button className="btn btn--secondary" type="submit">Add possession interval</button></div>
+              </form>
+              <ul className="itemlist">
+                {review.possession_intervals.map(item => (
+                  <li key={item.id}>
+                    <span><span className="mono">{count(item.start_seconds)}–{count(item.end_seconds)} s</span> · {item.team === "unknown" ? "Unknown" : review.teams[item.team]} · {sentence(item.review_status)}</span>
+                    <span className="row">
+                      <WatchButton at={item.start_seconds} label="View in video" />
+                      <button type="button" className="btn btn--secondary btn--sm" onClick={() => edit({ possession_intervals: review.possession_intervals.map(other => other.id === item.id ? { ...other, review_status: item.review_status === "approved" ? "draft" : "approved" } : other) })}>{item.review_status === "approved" ? "Return interval to draft" : "Approve interval"}</button>
+                      <button type="button" className="btn btn--secondary btn--sm btn--danger" onClick={() => edit({ possession_intervals: review.possession_intervals.filter(other => other.id !== item.id) })}>Delete interval</button>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+              {!review.possession_intervals.length && <p>No possession intervals recorded.</p>}
+            </Disclosure>
+          </fieldset>
+        )}
+
+        <Disclosure summary="Where drafts are kept">
+          <p>Drafts stay in this tab when you switch clips or views. Only Save review persists applied annotations.</p>
+          <p>Per-run edits and unfinished forms are held in memory until this tab is closed or refreshed. Closing warns if any run has unsaved work. The JSON download contains the last server-saved review, excluding unsaved edits and unfinished forms.</p>
+        </Disclosure>
+      </div>
+    </Panel>
+  );
 }
 
+/** Totals from saved, reviewer-approved records only. Never mixed with model estimates. */
 export function ApprovedSummary({ saved, unsaved }: { saved: Review; unsaved: boolean }) {
   const instanceId = useId();
   const s = saved.summary;
   const hasPossession = saved.possession_intervals.some(interval => interval.review_status === "approved");
-  return <section className="review-panel__summary" aria-labelledby={instanceId + "-approved-summary-title"}><p className="eyebrow">Saved reviewer-approved records only</p><h3 id={instanceId + "-approved-summary-title"}>Reviewed-record summary</h3>
-    <p>This is a summary of saved approved annotations, not full-match statistics. Reviewed coverage: {num(s.reviewed_seconds)}s ({num(s.reviewed_video_pct)}% of the source). Coverage is recorded separately from individual event approval.</p>
-    {unsaved && <p className="review-panel__notice">Unsaved edits are excluded. Save the review to update this summary.</p>}
-    {!s.approved_events ? <p className="review-panel__notice">No saved approved events. Football event statistics remain unavailable until a reviewer approves and saves annotations.</p> : <>
-      <div className="review-panel__scroll" tabIndex={0} role="region" aria-label="Saved approved team event summary; scroll for all columns"><table><thead><tr><th scope="col">Recorded metric</th><th scope="col">{saved.teams.home}</th><th scope="col">{saved.teams.away}</th></tr></thead><tbody>
-        {[
-          ["Approved events", (t: TeamSummary) => num(t.event_count)],
-          ["Passes recorded", (t: TeamSummary) => num(t.passes.recorded)],
-          ["Pass outcomes · completed / known", (t: TeamSummary) => `${num(t.passes.completed)} / ${num(t.passes.known_outcomes)}`],
-          ["Pass completion · known outcomes only", (t: TeamSummary) => t.passes.completion_pct === null ? "Unknown" : `${num(t.passes.completion_pct)}%`],
-          ["Passes with unknown outcomes", (t: TeamSummary) => num(t.passes.recorded - t.passes.known_outcomes)],
-          ["Pass outcome coverage · known / recorded", (t: TeamSummary) => t.passes.outcome_coverage_pct === null ? "Unknown" : `${num(t.passes.outcome_coverage_pct)}% (${num(t.passes.known_outcomes)} / ${num(t.passes.recorded)})`],
-          ["Shots · on target / recorded", (t: TeamSummary) => `${num(t.shots.on_target)} / ${num(t.shots.recorded)}`],
-          ["Goals recorded", (t: TeamSummary) => num(t.shots.goals)],
-          ["Tackles · won / recorded", (t: TeamSummary) => `${num(t.tackles.won)} / ${num(t.tackles.recorded)}`],
-          ["Interceptions recorded", (t: TeamSummary) => num(t.interceptions)],
-          ["Dribbles · successful / recorded", (t: TeamSummary) => `${num(t.dribbles.successful)} / ${num(t.dribbles.recorded)}`],
-          ["Duels · won / recorded", (t: TeamSummary) => `${num(t.duels.won)} / ${num(t.duels.recorded)}`],
-        ].map(([label, format]) => <tr key={label as string}><th scope="row">{label as string}</th>{(["home", "away"] as const).map(team => <td key={team}>{s.teams[team] ? (format as (t: TeamSummary) => string)(s.teams[team]!) : "No approved records"}</td>)}</tr>)}
-      </tbody></table></div>
-      {s.players.length > 0 && <><h4>Manually labelled player records</h4><div className="review-panel__scroll" tabIndex={0} role="region" aria-label="Approved annotations by manually labelled player"><table><thead><tr><th scope="col">Player / team</th><th scope="col">Approved events</th><th scope="col">Recorded event types</th></tr></thead><tbody>{s.players.map(player => <tr key={`${player.team}-${player.player}`}><th scope="row">{player.player}<small>{saved.teams[player.team]}</small></th><td>{player.event_count}</td><td>{Object.entries(player.counts).map(([type, count]) => `${words(type)}: ${count}`).join(" · ")}</td></tr>)}</tbody></table></div></>}
-    </>}
-    {hasPossession ? <div className="review-panel__possession-summary"><h4>Approved possession annotations</h4><p>{saved.teams.home}: {num(s.possession.home_seconds)}s · {saved.teams.away}: {num(s.possession.away_seconds)}s · Unknown / unassigned: {num(s.possession.unknown_seconds)}s.</p><p>Share of known approved possession: {saved.teams.home} {s.possession.home_share_pct === null ? "unknown" : `${num(s.possession.home_share_pct)}%`}, {saved.teams.away} {s.possession.away_share_pct === null ? "unknown" : `${num(s.possession.away_share_pct)}%`}. Known possession coverage: {num(s.possession.known_coverage_pct)}% of source. Unannotated footage is not assigned a team.</p></div> : <p>No saved approved possession intervals. Possession statistics remain unavailable.</p>}
-  </section>;
+  const rows: [string, (team: TeamSummary) => string][] = [
+    ["Approved events", t => count(t.event_count)],
+    ["Passes recorded", t => count(t.passes.recorded)],
+    ["Pass outcomes · completed / known", t => `${count(t.passes.completed)} / ${count(t.passes.known_outcomes)}`],
+    ["Pass completion · known outcomes only", t => t.passes.completion_pct === null ? "Unknown" : `${count(t.passes.completion_pct)}%`],
+    ["Passes with unknown outcomes", t => count(t.passes.recorded - t.passes.known_outcomes)],
+    ["Pass outcome coverage · known / recorded", t => t.passes.outcome_coverage_pct === null ? "Unknown" : `${count(t.passes.outcome_coverage_pct)}% (${count(t.passes.known_outcomes)} / ${count(t.passes.recorded)})`],
+    ["Shots · on target / recorded", t => `${count(t.shots.on_target)} / ${count(t.shots.recorded)}`],
+    ["Goals recorded", t => count(t.shots.goals)],
+    ["Tackles · won / recorded", t => `${count(t.tackles.won)} / ${count(t.tackles.recorded)}`],
+    ["Interceptions recorded", t => count(t.interceptions)],
+    ["Dribbles · successful / recorded", t => `${count(t.dribbles.successful)} / ${count(t.dribbles.recorded)}`],
+    ["Duels · won / recorded", t => `${count(t.duels.won)} / ${count(t.duels.recorded)}`],
+  ];
+
+  return (
+    <Panel
+      title="Reviewed-record summary"
+      subtitle="Saved, reviewer-approved records only. This is not full-match statistics."
+      aside={<EvidenceChip level="reviewed" />}
+    >
+      <p className="facts">
+        <span>Approved events<b>{count(s.approved_events)}</b></span>
+        <span>Saved drafts<b>{count(s.draft_events)}</b></span>
+        <span>Reviewed footage<b>{secs(s.reviewed_seconds, 2)}</b></span>
+        <span>Share of the clip reviewed<b>{s.reviewed_video_pct === null ? "Unknown" : `${num(s.reviewed_video_pct, 2)}%`}</b></span>
+      </p>
+      <p className="note">Coverage is recorded separately from individual event approval.</p>
+      {unsaved && <p className="note note--boxed note--flood">Unsaved edits and unfinished forms are excluded. Save the review to update this summary.</p>}
+      {!s.approved_events ? (
+        <EmptyState title="No approved event records yet">Football event statistics remain unavailable until a reviewer approves and saves annotations. Passes, shots and possession are not inferred from detection counts.</EmptyState>
+      ) : <>
+        <DataTable label="Saved approved team event summary; scroll for all columns">
+          <thead><tr><th scope="col">Recorded metric</th><th scope="col" className="num">{saved.teams.home}</th><th scope="col" className="num">{saved.teams.away}</th></tr></thead>
+          <tbody>
+            {rows.map(([label, format]) => (
+              <tr key={label}>
+                <th scope="row">{label}</th>
+                {(["home", "away"] as const).map(team => <td key={team} className="num">{s.teams[team] ? format(s.teams[team]!) : "No approved records"}</td>)}
+              </tr>
+            ))}
+          </tbody>
+        </DataTable>
+        {s.players.length > 0 && (
+          <div className="stack stack--sm">
+            <h4 id={instanceId}>Manually labelled player records</h4>
+            <DataTable label="Approved annotations by manually labelled player">
+              <thead><tr><th scope="col">Player / team</th><th scope="col" className="num">Approved events</th><th scope="col">Recorded event types</th></tr></thead>
+              <tbody>
+                {s.players.map(player => (
+                  <tr key={`${player.team}-${player.player}`}>
+                    <th scope="row">{player.player}<small>{saved.teams[player.team]}</small></th>
+                    <td className="num">{player.event_count}</td>
+                    <td>{Object.entries(player.counts).map(([type, total]) => `${words(type)}: ${total}`).join(" · ")}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </DataTable>
+          </div>
+        )}
+      </>}
+      {hasPossession ? (
+        <div className="stack stack--sm">
+          <h4>Approved possession annotations</h4>
+          <p>{saved.teams.home}: {secs(s.possession.home_seconds, 2)} · {saved.teams.away}: {secs(s.possession.away_seconds, 2)} · Unknown: {secs(s.possession.unknown_seconds, 2)}.</p>
+          <p className="note">
+            Share of known approved possession: {saved.teams.home} {s.possession.home_share_pct === null ? "unknown" : `${count(s.possession.home_share_pct)}%`}, {saved.teams.away} {s.possession.away_share_pct === null ? "unknown" : `${count(s.possession.away_share_pct)}%`}.
+            Known possession coverage: {s.possession.known_coverage_pct === null ? "unknown" : `${count(s.possession.known_coverage_pct)}%`} of source. Unannotated footage is not assigned a team.
+          </p>
+        </div>
+      ) : <p className="note">No saved approved possession intervals. Reviewed possession statistics remain unavailable.</p>}
+    </Panel>
+  );
 }

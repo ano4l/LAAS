@@ -1,0 +1,215 @@
+/* Floodlit touchline: tokens and base styles. Dark only; the video is the brightest thing on screen. */
+:root {
+  color-scheme: dark;
+
+  /* Surfaces */
+  --ink: #0a0e0d;
+  --turf: #111715;
+  --turf-2: #182019;
+  --turf-3: #1f2a22;
+  --line: rgba(238, 242, 234, 0.09);
+  --line-strong: rgba(238, 242, 234, 0.18);
+
+  /* Type */
+  --chalk: #eef2ea;
+  --chalk-2: #a3aea6;
+  --chalk-3: #808c85; /* lifted from #6f7b74 so faint text still passes AA on --turf */
+
+  /* Accent: floodlight. Primary action, playhead, focus, active tab, reviewed. */
+  --flood: #c8f24a;
+  --flood-ink: #10160a;
+  --flood-dim: rgba(200, 242, 74, 0.14);
+
+  /* The two kit groups. Never used for anything else. */
+  --kit-a: #ffb347;
+  --kit-b: #5cc8ff;
+  --kit-x: #cfd6d0; /* a third or unmatched group: neutral, never a team colour */
+
+  /* States */
+  --unknown: #2b3531;
+  --contested: #b8a9d9;
+  --alert: #ff7a59;
+  --alert-dim: rgba(255, 122, 89, 0.12);
+
+  --font-display: "Big Shoulders Display Variable", "Barlow Condensed", "Arial Narrow", sans-serif;
+  --font-text: "Hanken Grotesk Variable", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, "Cascadia Mono", Consolas, monospace;
+
+  --radius: 12px;
+  --radius-md: 8px;
+  --radius-sm: 4px;
+  --control-h: 36px;
+  --appbar-h: 56px;
+  --gutter: 24px;
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--ink);
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  /* Mown-stripe banding and a trace of floodlight spill from above. Both stay under 3% contrast. */
+  background:
+    radial-gradient(1100px 420px at 50% -260px, rgba(200, 242, 74, 0.05), transparent 70%),
+    repeating-linear-gradient(90deg, rgba(238, 242, 234, 0.016) 0 140px, transparent 140px 280px),
+    var(--ink);
+  background-attachment: fixed;
+  color: var(--chalk);
+  font-family: var(--font-text);
+  font-size: 15px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+p,
+ul,
+ol,
+dl,
+dd,
+figure {
+  margin: 0;
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--font-display);
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: 0.01em;
+}
+
+h1 { font-size: 34px; }
+h2 { font-size: 26px; }
+h3 { font-size: 22px; }
+h4 { font-size: 15px; font-weight: 600; line-height: 1.35; }
+h5 { font-size: 13px; font-weight: 600; line-height: 1.35; color: var(--chalk-2); }
+
+a {
+  color: var(--chalk);
+  text-decoration-color: var(--line-strong);
+  text-underline-offset: 3px;
+}
+
+a:hover { text-decoration-color: var(--flood); }
+
+small { font-size: 13px; }
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button { cursor: pointer; }
+button:disabled { cursor: not-allowed; }
+
+svg { flex: none; }
+
+[hidden] { display: none !important; }
+
+:focus-visible {
+  outline: 2px solid var(--flood);
+  outline-offset: 2px;
+}
+
+::selection {
+  background: var(--flood);
+  color: var(--flood-ink);
+}
+
+/* Inner scroll regions get slim scrollbars; the page scrollbar keeps the platform default. */
+body * {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
+}
+
+.mono,
+time,
+output {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+.muted { color: var(--chalk-2); }
+.faint { color: var(--chalk-3); }
+
+/* Entrances start dimmed, not invisible: if a background or throttled page holds the first frame,
+   the content can still be read. */
+@keyframes ui-rise {
+  from { opacity: 0.35; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes ui-drop {
+  from { transform: translateY(-5px); }
+  to { transform: none; }
+}
+
+@keyframes ui-fade {
+  from { opacity: 0.35; }
+  to { opacity: 1; }
+}
+
+@keyframes ui-spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes ui-pulse {
+  50% { opacity: 0.35; }
+}
+
+@media (max-width: 720px) {
+  :root {
+    --gutter: 16px;
+    --control-h: 40px;
+  }
+
+  h1 { font-size: 28px; }
+  h2 { font-size: 23px; }
+  h3 { font-size: 20px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    animation-delay: 0s !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
