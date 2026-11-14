@@ -18,7 +18,9 @@ from workers.video.yolo_adapter import model_path, yolo_capabilities
 from workers.video.detector import FootballDetector
 from workers.video.accuracy import analysis_settings
 from workers.video import insights as video_insights, measurements as video_measurements
-from workers.video.track_linking import AppearanceBank, PEOPLE, apply_links, link_tracks, write_links
+from workers.video.ball_path import select_ball_path
+from workers.video.camera_motion import CameraMotion
+from workers.video.track_linking import AppearanceBank, PEOPLE, apply_links, link_tracks, write_links, write_rows
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -82,6 +84,7 @@ def run_real_analysis(input_video: Path, output_root: Path, progress=None) -> di
         from workers.video.reid import BackboneEmbedder
         embedder = BackboneEmbedder(model_path(ROOT), device=device)
     appearance, link_rows = AppearanceBank(embedder=embedder), []
+    refiner, warps, warp_scenes = getattr(detector, "refiner", None), {}, {}
     last_rows = []
     try:
         with (out_dir / "encoder.log").open("wb") as log, (out_dir / "tracking.json").open("w", encoding="utf-8") as tracking_file:
@@ -103,7 +106,10 @@ def run_real_analysis(input_video: Path, output_root: Path, progress=None) -> di
                     last_rows = []
                     if frame_idx % stride == 0:
                         last_rows = []
-                        for detection in detector.detect(frame):
+                        detections = detector.detect(frame)
+                        if getattr(refiner, "camera_warp", None) is not None:
+                            warps[frame_idx], warp_scenes[frame_idx] = refiner.camera_warp, refiner.scene_id
+                        for detection in detections:
                             label, identity = detection["object_type"], detection["track_id"]
                             row = dict(frame_idx=frame_idx, timestamp_ms=round(frame_idx / metadata["fps"] * 1000), **detection)
                             row.update(team=detection.get('team'), player_id=None, coordinate_space="image_pixels", review_status="unreviewed")
@@ -159,12 +165,19 @@ def run_real_analysis(input_video: Path, output_root: Path, progress=None) -> di
             raise RuntimeError(f"Video decoding stopped at frame {decoded} of {metadata['frame_count']}. Re-export the source video.")
         if progress:
             progress("Linking fragmented tracks", 0.96)
+        # Image-based camera motion is used for the ball path. Track linking keeps its own
+        # estimate from player movement, which measured better for joining player tracks.
+        camera = CameraMotion.from_warps(warps, warp_scenes) if warps else CameraMotion.from_people(link_rows)
+        (out_dir / "camera-motion.json").write_text(json.dumps(dict(source=camera.source, warps=warps, scenes=warp_scenes)), encoding="utf-8")
         linking = link_tracks(link_rows, appearance.descriptors(), metadata["fps"], embeddings=appearance.embeddings())
         linking["summary"]["embedding_model"] = embedder.name if embedder else None
         apply_links(out_dir / "tracking.json", linking)
         write_links(out_dir, linking)
         # Analytics are computed after linking so they follow linked identities, not raw tracker IDs.
         linked_rows = json.loads((out_dir / "tracking.json").read_text(encoding="utf-8"))
+        # Choose the ball path over the whole clip, then store the rows analytics will read.
+        ball_path = select_ball_path(linked_rows, metadata, camera=camera)
+        write_rows(out_dir / "tracking.json", linked_rows)
         scope = dict(sample_fps=metadata["fps"] / stride, decoded_frames=decoded)
         warnings = ["Detections and track IDs are unreviewed model predictions, not verified player identities.",
                     "Jersey groups are anonymous colour estimates, not verified teams. Passes, tackles, shots, goals, possession and xG are not verified.",
@@ -172,7 +185,7 @@ def run_real_analysis(input_video: Path, output_root: Path, progress=None) -> di
                     "Camera cuts and occlusion can split or switch track IDs. Output video has no audio.",
                     "Timestamps use the reported frame rate. Normalize variable-frame-rate footage before precise temporal review."]
         warnings.append("linked_track_id joins track fragments offline using timing, image position and kit colour. Links are unreviewed and can join different players; track_id keeps the original tracker output. Measurements and insights use the linked identities; the annotated video shows original tracker IDs.")
-        warnings.append("Ball candidates pass geometry filtering; continuity selection is provisional, not a confirmed trajectory. Missing positions remain missing; none are interpolated.")
+        warnings.append("Ball candidates pass geometry filtering; ball_selected marks the most consistent observed path chosen over the whole clip; it is provisional, not a confirmed trajectory. Missing positions remain missing; none are interpolated.")
         if stride > 1:
             warnings.append("Only sampled frames have detection overlays. Unsampled frames are not analysed or interpolated.")
         if options["tile_size"]:
@@ -199,6 +212,7 @@ def run_real_analysis(input_video: Path, output_root: Path, progress=None) -> di
         summary["quality_filters"] = getattr(detector, "quality_counts", {})
         summary["quality_version"] = "research-association-2"
         summary["track_linking"] = linking["summary"]
+        summary["ball_path"] = ball_path
         summary["linked_tracks"] = linking["identities"]
         if rescue_weights:
             with rescue_weights.open('rb') as stream:

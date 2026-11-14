@@ -17,6 +17,7 @@ import sys
 import cv2
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from workers.video.camera_motion import CameraMotion, estimate_warps
 from workers.video.track_linking import AppearanceBank, LinkSettings, PEOPLE, link_tracks, write_links
 
 
@@ -77,10 +78,10 @@ def fragment(rows, fps, seed=7, min_observations=60):
     return out, cuts, spans
 
 
-def evaluate(source, rows, fps, settings, embedder=None):
+def evaluate(source, rows, fps, settings, embedder=None, camera=None):
     cut_rows, cuts, spans = fragment(rows, fps)
     descriptors, embeddings = appearance(source, cut_rows, embedder)
-    result = link_tracks(cut_rows, descriptors, fps, settings, embeddings)
+    result = link_tracks(cut_rows, descriptors, fps, settings, embeddings, camera)
     truth = set(cuts)
     repaired = skipped = wrong = unknown = 0
     for link in result["links"]:
@@ -109,6 +110,7 @@ if __name__ == "__main__":
     p.add_argument("--margin", type=float, default=LinkSettings.ambiguity_margin)
     p.add_argument("--embedding-weights", type=Path, help="Detector weights whose backbone supplies appearance embeddings")
     p.add_argument("--osnet", type=Path, nargs=2, metavar=("WEIGHTS", "OSNET_PY"), help="OSNet ReID checkpoint and torchreid osnet.py")
+    p.add_argument("--image-camera", action="store_true", help="Use image-feature camera motion instead of the default player-movement estimate")
     p.add_argument("--min-observations", type=int, default=LinkSettings.min_observations)
     args = p.parse_args()
     settings = LinkSettings(max_gap_seconds=args.max_gap, ambiguity_margin=args.margin, min_observations=args.min_observations)
@@ -124,11 +126,13 @@ if __name__ == "__main__":
     if embedder:
         settings = replace(settings, **embedder.link_settings)
     descriptors, embeddings = appearance(args.source, rows, embedder)
-    result = link_tracks(rows, descriptors, fps, settings, embeddings)
+    # Default: the pipeline's player-movement estimate (measured better for linking than image features).
+    camera = CameraMotion.from_warps(estimate_warps(args.source)) if args.image_camera else None
+    result = link_tracks(rows, descriptors, fps, settings, embeddings, camera)
     report = dict(source=args.source.name, run_id=manifest["run_id"],
                   **{k: result["summary"][k] for k in ("tracks_before", "identities_after", "links_accepted", "tracklet_ends_left_ambiguous")})
     if args.evaluate:
-        report["cut_repair_check"] = evaluate(args.source, rows, fps, settings, embedder)
+        report["cut_repair_check"] = evaluate(args.source, rows, fps, settings, embedder, camera)
     if args.output:
         args.output.mkdir(parents=True, exist_ok=True)
         write_links(args.output, result)

@@ -20,6 +20,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from workers.video.camera_motion import CameraMotion
+
 PEOPLE = {"person", "player", "goalkeeper", "referee"}
 VERSION = "track-linking-1"
 
@@ -151,8 +153,7 @@ def camera_offsets(rows):
     return offsets
 
 
-def _tracklets(rows, settings):
-    offsets = camera_offsets(rows)
+def _tracklets(rows, settings, camera):
     grouped = defaultdict(list)
     for row in rows:
         if row.get("track_id") and row["object_type"] in PEOPLE:
@@ -160,7 +161,9 @@ def _tracklets(rows, settings):
     tracklets = {}
     for identity, items in grouped.items():
         items.sort(key=lambda r: r["frame_idx"])
-        points = [(r["frame_idx"], np.subtract(_foot(r["bbox"]), offsets[r["frame_idx"]]), r["bbox"][3] - r["bbox"][1]) for r in items]
+        # Foot point and box height in stabilised coordinates, so pans and zooms do not look like player movement.
+        points = [(r["frame_idx"], camera.stabilise(r["frame_idx"], _foot(r["bbox"])),
+                   (r["bbox"][3] - r["bbox"][1]) * camera.scale(r["frame_idx"])) for r in items]
         head, tail = points[:settings.velocity_window], points[-settings.velocity_window:]
         classes = Counter(r["object_type"] for r in items)
         teams = Counter(r["team"] for r in items if r.get("team"))
@@ -219,7 +222,7 @@ def _link_evidence(a, b, descriptors, fps, settings, embeddings=None):
                 embedding_distance=None if embedding is None else round(embedding, 4), cost=round(cost, 4))
 
 
-def link_tracks(rows, descriptors, fps, settings=LinkSettings(), embeddings=None):
+def link_tracks(rows, descriptors, fps, settings=LinkSettings(), embeddings=None, camera=None):
     """Return linked identities, accepted links with their evidence, and a summary.
 
     `embeddings` are optional unit-length learned appearance vectors per track. Detector
@@ -229,7 +232,8 @@ def link_tracks(rows, descriptors, fps, settings=LinkSettings(), embeddings=None
     if embeddings and settings.centre_embeddings:
         mean = np.mean(list(embeddings.values()), axis=0)
         embeddings = {key: (value - mean) / max(1e-9, float(np.linalg.norm(value - mean))) for key, value in embeddings.items()}
-    tracklets = _tracklets(rows, settings)
+    camera = camera or CameraMotion.from_people(rows)
+    tracklets = _tracklets(rows, settings, camera)
     order = sorted(tracklets.values(), key=lambda t: (t["first"], t["track_id"]))
     index = {t["track_id"]: i for i, t in enumerate(order)}
     starts_sorted = [t["first"] for t in order]
@@ -304,7 +308,7 @@ def link_tracks(rows, descriptors, fps, settings=LinkSettings(), embeddings=None
                                observations=sum(m["observations"] for m in members)))
     summary = dict(version=VERSION, tracks_before=len(tracklets), identities_after=len(identities),
                    links_accepted=len(accepted), tracklet_ends_left_ambiguous=ambiguous,
-                   candidate_links=len(candidates), tracks_with_appearance=len(descriptors.keys() & tracklets.keys()),
+                   candidate_links=len(candidates), camera_motion=camera.source, tracks_with_appearance=len(descriptors.keys() & tracklets.keys()),
                    tracks_with_embedding=len((embeddings or {}).keys() & tracklets.keys()),
                    settings=asdict(settings),
                    limitations=["Linked identities are anonymous, unreviewed and not validated against labelled identities.",
@@ -346,6 +350,14 @@ def apply_links(tracking_path: Path, result: dict) -> None:
             row = json.loads(body)
             row.update(result["mapping"].get(row.get("track_id"), dict(linked_track_id=None, linked_team=None)))
             target.write(json.dumps(row) + text[len(body):] + "\n")
+    temporary.replace(tracking_path)
+
+
+def write_rows(tracking_path: Path, rows) -> None:
+    """Write tracking rows in the one-row-per-line layout the pipeline streams."""
+    temporary = tracking_path.with_suffix(".rows.tmp")
+    with temporary.open("w", encoding="utf-8") as target:
+        target.write("[\n" + ",\n".join(json.dumps(row) for row in rows) + "\n]")
     temporary.replace(tracking_path)
 
 
