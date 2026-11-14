@@ -175,3 +175,33 @@ def test_event_matching_is_one_to_one_max_cardinality_and_window_scoped():
     assert score['events']['false_positives']==0
     assert score['events']['recall']==1
     assert score['events']['precision']==1
+
+
+def test_team_retention_bridges_same_team_touches_and_is_reported_apart():
+    out,_=calculate([100]*4+[None]*4+[400]*4)
+    s=out['sequences'];r=s['retention']
+    assert s['known_seconds']==.8 and s['unknown_seconds']==.4  # supported totals are unchanged
+    assert r['retained_seconds']==.4 and r['touch_pairs']==1 and r['known_with_retention_seconds']==1.2
+    assert r['coverage_with_retention_pct']==100 and r['by_team'][0]['with_retention_seconds']==1.2
+    retained=[i for i in s['intervals'] if i['state']=='team_retained']
+    assert [(i['start_seconds'],i['end_seconds'],i['team'],i['track_id'],i['support']) for i in retained]==[(.4,.8,'scene-0/kit-A',None,'same_team_touch_before_and_after')]
+
+
+def test_team_retention_is_not_assumed_across_a_change_of_team_a_long_gap_or_a_stoppage():
+    other_team,_=calculate([100]*4+[None]*4+[400]*4,kit='kit-B')
+    long_gap,_=calculate([100]*4+[None]*60+[400]*4)
+    stoppage,_=calculate([100]*4+[None]*4+[400]*4,context=dict(revision=1,kit_mappings={},dead_ball_intervals=[[.5,.6]]))
+    for out in (other_team,long_gap,stoppage):
+        assert out['sequences']['retention']['retained_seconds']==0
+        assert not any(i['state']=='team_retained' for i in out['sequences']['intervals'])
+    assert long_gap['sequences']['retention']['max_gap_seconds']==5
+
+
+def test_weak_ball_detection_counts_only_when_the_ball_path_supports_it():
+    meta=dict(width=1000,height=600,fps=10,frame_count=2,duration_seconds=.2,sha256='a'*64)
+    def seconds(**extra):
+        calc=VideoInsights(meta,10)
+        for i in range(2):
+            calc.observe(i,[player(100),dict(ball(100),confidence=.15,**extra)])
+        return calc.finish()['quality']['selected_ball_seconds']
+    assert seconds()==0 and seconds(ball_path_support='weak_between_confident')==.2

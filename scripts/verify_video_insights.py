@@ -23,7 +23,7 @@ def verify(api, key):
         status, body = get("/runs/"+target["run_id"])
         result = json.loads(body)
         data = result["metrics"]["video_insights"]
-        assert data["schema_version"] == "video-insights-3"
+        assert data["schema_version"] == "video-insights-4"
         assert data['collective_dynamics']['schema_version']=='soccertrack-dynamics-1'
         assert data['collective_dynamics']['formation']['label'] is None
         dynamics=data['collective_dynamics']
