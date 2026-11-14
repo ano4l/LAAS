@@ -6,6 +6,12 @@
       "runtimeExecutable": "node",
       "runtimeArgs": ["scripts/python.mjs", "-m", "uvicorn", "apps.api.main:app", "--host", "127.0.0.1", "--port", "8000"],
       "port": 8000
+    },
+    {
+      "name": "laas-web",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["apps/web/node_modules/vite/bin/vite.js", "apps/web", "--host", "127.0.0.1", "--port", "5173"],
+      "port": 5173
     }
   ]
 }

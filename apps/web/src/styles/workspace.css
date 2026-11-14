@@ -1,0 +1,416 @@
+/* Clip workspace: the sticky player with its synced timeline on the left, analysis tabs on the right. */
+
+.clip {
+  width: 100%;
+  max-width: 1640px;
+  margin: 0 auto;
+  padding: 16px var(--gutter) 40px;
+}
+
+.clip__grid {
+  display: grid;
+  grid-template-columns: minmax(400px, 45fr) minmax(0, 55fr);
+  align-items: start;
+  gap: 28px;
+}
+
+/* ---------- Left: stage ---------- */
+.stage {
+  position: sticky;
+  top: calc(var(--sticky-top) + 16px);
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  max-height: calc(100vh - var(--sticky-top) - 16px);
+  padding-bottom: 16px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+}
+
+.stage::-webkit-scrollbar { display: none; }
+.stage > * { min-width: 0; }
+
+.stage__title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 2px 16px;
+}
+
+.stage__title h1 {
+  min-width: 0;
+  font-size: 26px;
+  overflow-wrap: anywhere;
+}
+
+.stage__title p {
+  color: var(--chalk-2);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.player {
+  position: relative;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: #000;
+  overflow: hidden;
+}
+
+.player video {
+  display: block;
+  width: 100%;
+  max-height: max(200px, calc(100vh - var(--sticky-top) - 400px));
+  background: #000;
+}
+
+.player__missing {
+  display: grid;
+  place-items: center;
+  min-height: 200px;
+  padding: 24px;
+  color: var(--chalk-2);
+  text-align: center;
+}
+
+.transport {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.transport p {
+  flex: 1 1 200px;
+  color: var(--chalk-3);
+  font-size: 12.5px;
+  line-height: 1.4;
+  text-align: right;
+}
+
+.sourcefacts { display: grid; gap: 8px; font-size: 13px; }
+.sourcefacts ul { display: grid; gap: 6px; padding-left: 18px; }
+
+/* ---------- Timeline ---------- */
+.tl {
+  --lane-possession: 26px;
+  --lane-ball: 10px;
+  --lane-marks: 18px;
+  --lane-gap: 6px;
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--turf);
+  user-select: none;
+}
+
+.tl__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.tl__title {
+  font-family: var(--font-text);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0;
+  color: var(--chalk-2);
+}
+
+.tl__readout {
+  color: var(--chalk-2);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.tl__readout span { color: var(--flood); font-weight: 600; }
+
+.tl__grid {
+  display: grid;
+  grid-template-columns: 70px minmax(0, 1fr);
+  gap: 0 10px;
+}
+
+.tl__labels {
+  display: grid;
+  grid-template-rows: var(--lane-possession) var(--lane-ball) var(--lane-marks);
+  align-items: center;
+  gap: var(--lane-gap);
+  color: var(--chalk-2);
+  font-size: 12.5px;
+  line-height: 1;
+}
+
+.tl__track {
+  position: relative;
+  display: grid;
+  grid-template-rows: var(--lane-possession) var(--lane-ball) var(--lane-marks) 20px;
+  gap: var(--lane-gap);
+  min-width: 0;
+  border-radius: 3px;
+  cursor: pointer;
+  touch-action: none;
+}
+
+.tl__track:focus-visible { outline-offset: 5px; }
+
+.tl__lane {
+  position: relative;
+  min-width: 0;
+  border-radius: 3px;
+  background: var(--unknown);
+  overflow: hidden;
+}
+
+.tl__lane--ball { background: rgba(238, 242, 234, 0.07); border-radius: 2px; }
+
+.tl__lane--marks {
+  background: none;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  overflow: visible;
+}
+
+.tl__seg {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  min-width: 2px;
+}
+
+.tl__lane--possession .tl__seg { box-shadow: -1px 0 0 var(--turf); }
+
+.tl__empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  color: var(--chalk-2);
+  font-size: 12.5px;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+/* Markers differ by shape as well as colour: dot = touch, triangle = possible event, diamond = human review. */
+.tl__mark {
+  position: absolute;
+  top: 50%;
+  width: 8px;
+  height: 8px;
+  margin: -4px 0 0 -4px;
+  pointer-events: none;
+}
+
+.tl__mark--touch {
+  border-radius: 50%;
+  background: var(--tone, var(--chalk-2));
+  box-shadow: 0 0 0 1.5px var(--turf);
+}
+
+.tl__mark--possible {
+  width: 10px;
+  height: 9px;
+  margin: -5px 0 0 -5px;
+  background: var(--chalk);
+  clip-path: polygon(50% 0, 100% 100%, 0 100%);
+}
+
+.tl__mark--reviewed,
+.tl__mark--draft {
+  background: var(--flood);
+  transform: rotate(45deg);
+  border-radius: 1px;
+}
+
+.tl__mark--draft {
+  background: var(--turf);
+  box-shadow: inset 0 0 0 1.5px var(--flood);
+}
+
+.tl__mark--key {
+  position: static;
+  display: inline-block;
+  margin: 0 2px;
+  box-shadow: none;
+}
+
+.tl__mark--touch.tl__mark--key { background: var(--chalk-2); }
+
+.tl__axis { position: relative; }
+
+.tl__tick {
+  position: absolute;
+  top: 0;
+  height: 5px;
+  border-left: 1px solid var(--line-strong);
+}
+
+.tl__tick b {
+  position: absolute;
+  top: 7px;
+  left: 0;
+  color: var(--chalk-2);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1;
+  transform: translateX(-50%);
+}
+
+.tl__tick:first-child b { transform: none; }
+.tl__tick:last-child b { transform: translateX(-100%); }
+
+.tl__playhead {
+  position: absolute;
+  top: -4px;
+  bottom: 16px;
+  left: 0;
+  width: 2px;
+  margin-left: -1px;
+  border-radius: 1px;
+  background: var(--flood);
+  box-shadow: 0 0 0 1px rgba(10, 14, 13, 0.6), 0 0 10px rgba(200, 242, 74, 0.45);
+  pointer-events: none;
+}
+
+.tl__playhead::before {
+  content: "";
+  position: absolute;
+  top: -3px;
+  left: -4px;
+  width: 10px;
+  height: 7px;
+  background: var(--flood);
+  clip-path: polygon(0 0, 100% 0, 50% 100%);
+}
+
+.tl__hoverline {
+  position: absolute;
+  top: 0;
+  bottom: 20px;
+  width: 1px;
+  background: rgba(238, 242, 234, 0.45);
+  pointer-events: none;
+}
+
+.tl__tip {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  z-index: 5;
+  display: grid;
+  gap: 2px;
+  width: max-content;
+  max-width: 240px;
+  padding: 7px 10px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--ink);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  color: var(--chalk);
+  font-size: 12.5px;
+  line-height: 1.35;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.tl__tip b { color: var(--flood); font-family: var(--font-mono); font-weight: 600; font-variant-numeric: tabular-nums; }
+.tl__tipmark { padding-top: 3px; border-top: 1px solid var(--line); color: var(--chalk-2); }
+.tl__key { padding-top: 2px; font-size: 12.5px; gap: 5px 14px; }
+
+/* ---------- Right: analysis ---------- */
+.analysis {
+  min-width: 0;
+  scroll-margin-top: var(--sticky-top);
+}
+
+.analysis__tabs {
+  position: sticky;
+  top: var(--sticky-top);
+  z-index: 20;
+  margin: 0 -4px;
+  padding-top: 6px;
+  background: var(--ink);
+}
+
+.analysis__body { padding-top: 20px; }
+
+/* In the narrower two-column range the seven tabs fit only without their icons. */
+@media (min-width: 1101px) and (max-width: 1340px) {
+  .analysis__tabs .tab { padding: 0 11px; }
+  .analysis__tabs .tab > svg { display: none; }
+}
+
+.tabstack {
+  display: grid;
+  gap: 20px;
+  min-width: 0;
+}
+
+.tabstack > * { min-width: 0; }
+
+.tabhead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 8px 20px;
+}
+
+.tabhead h2 { font-size: 30px; }
+.tabhead p { margin-top: 4px; max-width: 62ch; color: var(--chalk-2); font-size: 14px; }
+
+@media (max-width: 1100px) {
+  .clip { padding-top: 12px; }
+
+  /* Stack. The stage dissolves so the player can stay stuck to the top while everything else scrolls. */
+  .clip__grid { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .stage { display: contents; }
+
+  .player {
+    position: sticky;
+    top: var(--sticky-top);
+    z-index: 30;
+    margin: 0 calc(-1 * var(--gutter));
+    border-width: 0 0 1px;
+    border-radius: 0;
+  }
+
+  .player video { max-height: 34vh; }
+  /* The analysis comes straight after the timeline; source details move to the end. */
+  .analysis { order: 1; margin-top: 8px; scroll-margin-top: calc(var(--sticky-top) + var(--player-h, 0px)); }
+  .stage > .disclosure { order: 2; }
+  /* The tab bar sticks directly under the sticky video, so changing tab never means scrolling back.
+     --player-h is the video's measured height, published by Workspace.tsx. */
+  .analysis__tabs {
+    top: calc(var(--sticky-top) + var(--player-h, 0px));
+    z-index: 25;
+    margin: 0 calc(-1 * var(--gutter));
+    padding: 0 calc(var(--gutter) - 4px);
+  }
+  .analysis__tabs .tabs { padding: 0; }
+}
+
+@media (max-width: 720px) {
+  .stage__title h1 { font-size: 22px; }
+  .tl { padding: 10px 12px; }
+  .tl__grid { grid-template-columns: minmax(0, 1fr); }
+  .tl__labels { display: none; }
+  .tl__tick:nth-child(even) b { display: none; }
+  .transport p { text-align: left; }
+  .tabhead h2 { font-size: 26px; }
+  .analysis__body { padding-top: 16px; }
+  .tabstack { gap: 16px; }
+}

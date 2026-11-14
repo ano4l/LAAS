@@ -1,7 +1,11 @@
-import { useId, useState } from "react";
+import { useCallback, useId, useState } from "react";
 import { ArrowDownToLine, ArrowRight, Play } from "lucide-react";
-import { TemporalPossession, type TemporalSequences } from "./TemporalPossession";
-import { SoccerTrackShape, type CollectiveDynamics } from "./SoccerTrackShape";
+import type { TemporalSequences } from "./TemporalPossession";
+import type { CollectiveDynamics } from "./SoccerTrackShape";
+import { num, pct, range, secs, sentence, words } from "./format";
+import { TeamName, useKits } from "./kits";
+import { usePlayback, usePlaybackValue } from "./playback";
+import { DataTable, Disclosure, EmptyState, Field, Meter, Pager, Panel, WatchButton, cssVars } from "./ui";
 
 type PathPoint = { timestamp_seconds: number; x_pct: number; y_pct: number; scene_id: number; segment_id: number };
 type ShapeWindow = { start_seconds: number; end_seconds: number; supported_frames: number; supported_seconds: number; mean_visible_players: number; centroid_x_pct: number | null; centroid_y_pct: number | null; width_pct: number | null; depth_pct: number | null };
@@ -11,6 +15,7 @@ type Candidate = { id: string; type: string; timestamp_seconds: number; start_se
 export type VideoInsights = {
   schema_version: string; source: string; review_status: string; coordinate_system: string;
   source_video?: { filename?: string; sha256?: string; width?: number; height?: number; fps?: number; frame_count?: number };
+  sample_fps?: number;
   source_duration_seconds: number; analyzed_frames: number; analyzed_seconds: number;
   quality: { selected_ball_seconds: number; selected_ball_coverage_pct: number | null; grouped_player_observations: number; player_observations: number; kit_assignment_coverage_pct: number | null; accuracy_evaluated: boolean };
   control: { estimated_control_seconds: number; unknown_seconds: number; coverage_pct: number | null; grouped_control_seconds: number; grouped_coverage_pct: number | null; spells: Spell[]; by_kit: { kit: string; estimated_seconds: number; share_of_known_control_pct: number | null; clip_share_pct: number | null }[] };
@@ -24,11 +29,11 @@ export type VideoInsights = {
   sequences?: TemporalSequences;
   collective_dynamics?: CollectiveDynamics;
 };
-const n = (value: number | null | undefined, digits = 2) => value == null ? "Unknown" : value.toLocaleString(undefined, { maximumFractionDigits: digits });
-const pct = (value: number | null | undefined) => value == null ? "Unknown" : `${n(value)}%`;
-const thirds = ["Left image third", "Centre image third", "Right image third"];
-const candidateName = (type: string) => type === "possible_pass" ? "Possible pass" : type === "possible_turnover" ? "Possible turnover" : type.replaceAll("_", " ");
 
+const THIRDS = ["Left third of the image", "Centre third of the image", "Right third of the image"];
+export const candidateName = (type: string) => type === "possible_pass" ? "Possible pass" : type === "possible_turnover" ? "Possible turnover" : sentence(type);
+
+/** Insights JSON and CSV for this run. The export format is unchanged; only the buttons are restyled. */
 export function VideoInsightsDownloads({ insights, runId }: { insights: VideoInsights; runId: string }) {
   function download(format: "json" | "csv") {
     const columns = ["record_type", "source_run_id", "source_duration_seconds", "sequence_schema_version", "context_revision", "mapping_status", "scene_id", "segment_id", "team", "from_team", "to_team", "kit", "track_id", "start_seconds", "end_seconds", "interval_seconds", "state", "support", "x_pct", "y_pct", "width_pct", "depth_pct", "supported_seconds", "unknown_seconds", "contested_seconds", "dead_ball_seconds", "classified_non_dead_seconds", "observed_seconds", "observed_frames", "share_of_known_group_control_pct", "clip_share_pct", "share_of_known_sequence_pct", "share_of_non_dead_pct", "observed_control_seconds", "flight_and_gap_seconds", "bounded_missing_ball_seconds", "ball_support_pct", "missing_ball_seconds", "max_missing_ball_gap_seconds", "receiver_support", "quality_flags", "evidence_level", "possession_included", "event_type", "from_track", "to_track", "review_status"];
@@ -68,86 +73,366 @@ export function VideoInsightsDownloads({ insights, runId }: { insights: VideoIns
     const url = URL.createObjectURL(new Blob([contents], { type: format === "json" ? "application/json" : "text/csv;charset=utf-8" }));
     const link = document.createElement("a"); link.href = url; link.download = `${runId}-unreviewed-video-insights.${format}`; link.click(); window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
-  return <div className="insights-downloads"><button className="ghost" onClick={() => download("json")}><ArrowDownToLine size={14} /> Insights JSON</button><button className="ghost" onClick={() => download("csv")}><ArrowDownToLine size={14} /> Insights CSV</button></div>;
+  return (
+    <div className="row">
+      <button type="button" className="btn btn--secondary btn--sm" onClick={() => download("json")}><ArrowDownToLine size={14} aria-hidden="true" /> Insights JSON</button>
+      <button type="button" className="btn btn--secondary btn--sm" onClick={() => download("csv")}><ArrowDownToLine size={14} aria-hidden="true" /> Insights CSV</button>
+    </div>
+  );
 }
 
-export function VideoInsightsPanel({ insights: data, runId, onSeek }: { insights?: VideoInsights; runId: string; onSeek: (seconds: number) => void }) {
-  const id = useId();
-  if (!data) return <section className="studio-panel video-insights insights-missing"><span className="studio-status model">Automatic insights</span><h3>Extended video insights are not available in this run.</h3><p>You can still inspect its available observations below and review the footage. No control or event estimates are assumed for missing data.</p></section>;
-  return <section className="video-insights" aria-labelledby={`${id}-title`}>
-    <header className="insights-heading"><div><p className="eyebrow">Automatic video insights</p><h3 id={`${id}-title`}>Follow the ball. Explore the evidence.</h3><p>Observed paths and supported estimates from this {n(data.source_duration_seconds)}s clip.</p></div><span className="studio-status model">Model estimates · unreviewed</span></header>
-    <div className="insights-support"><article><span>Eligible selected-ball evidence</span><strong>{n(data.quality.selected_ball_seconds)}s</strong><small>{pct(data.quality.selected_ball_coverage_pct)} of full clip · confidence ≥ {data.parameters.min_ball_confidence ?? .25}</small></article><article><span>{data.sequences ? "Temporal classified team time" : "Strict near-foot control estimate"}</span><strong>{n(data.sequences?.known_seconds ?? data.control.estimated_control_seconds)}s</strong><small>{data.sequences ? `${pct(data.sequences.coverage_pct)} of ${n(data.sequences.classified_non_dead_seconds)}s non-dead time` : `${pct(data.control.coverage_pct)} of full clip`}</small></article><article className="insights-unknown"><span>{data.sequences ? "Unassigned non-dead time" : "Strict control remains unknown"}</span><strong>{n(data.sequences ? data.sequences.unknown_seconds + data.sequences.contested_seconds : data.control.unknown_seconds)}s</strong><small>{data.sequences ? `Unknown ${n(data.sequences.unknown_seconds)}s · contested ${n(data.sequences.contested_seconds)}s` : `Full ${n(data.source_duration_seconds)}s source denominator`}</small></article></div>
-    <ul className="insights-findings">{data.findings.slice(0, 4).map((finding, index) => <li key={`${finding.kind}-${index}`}>{finding.kind === "events" && !data.candidates.length ? "No possible events have enough supporting evidence. This does not establish a pass or turnover total." : finding.text}</li>)}</ul>
-    {data.findings.length > 4 && <details><summary>More automatic findings</summary><ul className="insights-findings">{data.findings.slice(4).map((finding, index) => <li key={`${finding.kind}-${index}`}>{finding.text}</li>)}</ul></details>}
-    {Boolean(data.bookmarks?.length) && <details className="insights-bookmarks"><summary>Evidence bookmarks · {data.bookmarks!.length}</summary><div>{data.bookmarks!.slice(0, 12).map(bookmark => <button className="ghost" key={bookmark.id} onClick={() => onSeek(bookmark.start_seconds)}><Play size={14} /><span><strong>{bookmark.label}</strong><small>{n(bookmark.start_seconds)}–{n(bookmark.end_seconds)}s · {bookmark.detail}</small></span></button>)}</div>{data.bookmarks!.length > 12 && <p>Showing the first 12 bookmarks. All bookmarks are included in Insights JSON.</p>}</details>}
-    <TemporalPossession sequences={data.sequences} onSeek={onSeek} />
-    <SoccerTrackShape data={data.collective_dynamics} imageWidth={data.source_video?.width} imageHeight={data.source_video?.height} duration={data.source_duration_seconds} onSeek={onSeek} />
-    <BallJourney data={data} onSeek={onSeek} />
-    <KitEvolution data={data} onSeek={onSeek} />
-    <details className="strict-control-detail"><summary>Strict near-foot observations <span>Separate observation rule · not team possession</span></summary><ControlEstimates data={data} onSeek={onSeek} /></details>
-    <CandidateQueue data={data} onSeek={onSeek} />
-    <footer className="insights-footer"><div><strong>Take these observations with you</strong><p>Downloads contain this run’s automatic estimates, not approved football records.</p></div><VideoInsightsDownloads insights={data} runId={runId} /></footer>
-    <details className="studio-technical insights-definitions"><summary>Definitions, support rules & trajectory sampling</summary><p>Eligible selected-ball evidence requires one selected observation with detection confidence ≥ {data.parameters.min_ball_confidence ?? .25}. The broader raw-candidate coverage in Observation detail can include ambiguous or lower-confidence observations; the measures use different eligibility rules.</p>{Object.entries(data.definitions).map(([name, text]) => <p key={name}><strong>{name.replaceAll("_", " ")}: </strong>{text}</p>)}<p>Ball path display: {data.ball.path.length} points from {data.ball.path_observations} observed positions, display stride {data.ball.path_display_stride}. Segment IDs preserve gaps and scene boundaries. Confidence and support are not measured accuracy.</p><dl>{Object.entries(data.parameters).map(([key, value]) => <div key={key}><dt>{key.replaceAll("_", " ")}</dt><dd>{String(value)}</dd></div>)}</dl></details>
-  </section>;
-}
+/* ---------- Ball journey ---------- */
 
-function BallJourney({ data, onSeek }: { data: VideoInsights; onSeek: (time: number) => void }) {
-  const id = useId();
+export function BallJourney({ data }: { data: VideoInsights }) {
   const scenes = [...new Set(data.ball.path.map(point => point.scene_id))].sort((a, b) => a - b);
   const [selectedScene, setSelectedScene] = useState(scenes[0] ?? 0);
   const [pointIndex, setPointIndex] = useState(0);
+  const [follow, setFollow] = useState(true);
   const points = data.ball.path.filter(point => point.scene_id === selectedScene);
-  const segments = new Map<number, PathPoint[]>(); points.forEach(point => segments.set(point.segment_id, [...(segments.get(point.segment_id) ?? []), point]));
-  const current = Math.min(pointIndex, Math.max(0, points.length - 1)); const point = points[current];
-  return <section className="insights-section" aria-labelledby={`${id}-title`}><header className="insights-section-heading"><div><p className="eyebrow">Observed positions only</p><h4 id={`${id}-title`}>Ball journey through the image</h4><p>Separate path segments stop at gaps, cuts and jumps. No missing positions are filled.</p></div>{scenes.length > 1 && <label>Ball path scene<select value={selectedScene} onChange={event => { setSelectedScene(Number(event.target.value)); setPointIndex(0); }}>{scenes.map(scene => <option key={scene} value={scene}>Scene {scene}</option>)}</select></label>}</header>
-    <div className="insights-chart-pair"><div><div className="insights-camera-chart"><span className="insights-image-top">Camera image · top (y 0%)</span><svg viewBox="0 0 100 100" preserveAspectRatio="none" role="img" aria-label={`Observed ball path in scene ${selectedScene}. X and Y are camera-image percentages. Inspect exact points with the time control below.`}><line x1="33.333" x2="33.333" y1="0" y2="100" /><line x1="66.667" x2="66.667" y1="0" y2="100" /><line x1="0" x2="100" y1="50" y2="50" />{[...segments].map(([segment, values]) => values.length > 1 ? <polyline key={segment} points={values.map(p => `${p.x_pct},${p.y_pct}`).join(" ")} /> : <circle className="insights-single-point" key={segment} cx={values[0].x_pct} cy={values[0].y_pct} r=".6" />)}{point && <circle className="insights-selected-point" cx={point.x_pct} cy={point.y_pct} r="1.1" />}</svg><div className="insights-image-axis"><span>x 0% · left</span><span>y 100% · bottom</span><span>right · x 100%</span></div></div>
-      {point ? <div className="insights-point-control"><label>Inspect observed ball time<input type="range" min="0" max={Math.max(0, points.length - 1)} step="1" value={current} onChange={event => setPointIndex(Number(event.target.value))} /></label><div role="status"><strong>{n(point.timestamp_seconds)}s</strong><span>x {pct(point.x_pct)} · y {pct(point.y_pct)} · segment {point.segment_id}</span><button className="ghost" onClick={() => onSeek(point.timestamp_seconds)}><Play size={13} /> Watch ball position</button></div></div> : <p className="insights-empty" role="status">No eligible observed ball path in this scene.</p>}
-      <p className="insights-caption">Scene {selectedScene}: {points.length} displayed points across {segments.size} separate segments. Displayed points are sampled; full-clip totals at right do not change with scene selection.</p>
-    </div><div className="insights-thirds-panel"><h5>Whole-clip image thirds</h5><p>Share of {n(data.ball.observed_seconds)}s observed ball time, across all scenes.</p><Thirds values={data.ball.image_thirds_pct} /><p className="insights-caption">Image thirds are not pitch zones or attack direction.</p>{points.length > 0 && <details><summary>Ball path data · selected scene</summary><DataTable label="Selected scene sampled ball positions"><thead><tr><th>Time</th><th>X image %</th><th>Y image %</th><th>Segment</th></tr></thead><tbody>{points.slice(Math.max(0, current - 5), current + 6).map(p => <tr key={`${p.timestamp_seconds}-${p.segment_id}`}><th scope="row">{n(p.timestamp_seconds)}s</th><td>{pct(p.x_pct)}</td><td>{pct(p.y_pct)}</td><td>{p.segment_id}</td></tr>)}</tbody></DataTable><p>Up to 11 points around the selected time. Full sampled path is in Insights JSON and CSV.</p></details>}</div></div>
-  </section>;
+  const segments = new Map<number, PathPoint[]>();
+  points.forEach(point => segments.set(point.segment_id, [...(segments.get(point.segment_id) ?? []), point]));
+
+  // While following, the marked point is the latest observed position at or before the playhead.
+  const path = data.ball.path;
+  const followed = usePlaybackValue(useCallback((seconds: number) => {
+    let found = -1;
+    for (let index = 0; index < path.length; index++) {
+      if (path[index].timestamp_seconds > seconds + 1e-6) break;
+      if (path[index].scene_id === selectedScene) found++;
+    }
+    return found;
+  }, [path, selectedScene]));
+  const current = Math.min(follow ? Math.max(0, followed) : pointIndex, Math.max(0, points.length - 1));
+  const point = points[current];
+  const aspect = data.source_video?.width && data.source_video?.height ? `${data.source_video.width} / ${data.source_video.height}` : "16 / 9";
+
+  return (
+    <Panel
+      title="Ball journey through the image"
+      subtitle="Observed positions only. Separate path segments stop at gaps, cuts and jumps; no missing positions are filled."
+      aside={scenes.length > 1 && (
+        <Field label="Ball path scene" className="field--inline">
+          <select value={selectedScene} onChange={event => { setSelectedScene(Number(event.target.value)); setPointIndex(0); }}>
+            {scenes.map(scene => <option key={scene} value={scene}>Scene {scene + 1}</option>)}
+          </select>
+        </Field>
+      )}
+    >
+      <div className="chartpair">
+        <div className="stack stack--sm">
+          <figure className="camera" style={{ aspectRatio: aspect }}>
+            <svg viewBox="0 0 100 100" preserveAspectRatio="none" role="img" aria-label={`Observed ball path in scene ${selectedScene + 1}. X and Y are camera-image percentages. Inspect exact points with the time control below.`}>
+              <g className="camera__grid"><line x1="33.333" x2="33.333" y1="0" y2="100" /><line x1="66.667" x2="66.667" y1="0" y2="100" /><line x1="0" x2="100" y1="50" y2="50" /></g>
+              {[...segments].map(([segment, values]) => values.length > 1
+                ? <polyline className="camera__path" key={segment} points={values.map(p => `${p.x_pct},${p.y_pct}`).join(" ")} />
+                : <circle className="camera__dot" key={segment} cx={values[0].x_pct} cy={values[0].y_pct} r=".6" />)}
+            </svg>
+            {point && <i className="camera__ball" style={{ left: `${point.x_pct}%`, top: `${point.y_pct}%` }} aria-hidden="true" />}
+            <figcaption className="camera__axis"><span>Left · x 0%</span><span>Camera image, top is y 0%</span><span>x 100% · right</span></figcaption>
+          </figure>
+
+          {point ? (
+            <div className="scrub">
+              <Field label="Observed ball position">
+                <input type="range" min="0" max={Math.max(0, points.length - 1)} step="1" value={current} onChange={event => { setFollow(false); setPointIndex(Number(event.target.value)); }} />
+              </Field>
+              <div className="row row--between" role="status">
+                <span><strong className="mono">{secs(point.timestamp_seconds, 2)}</strong> <span className="note">x {pct(point.x_pct)} · y {pct(point.y_pct)} · segment {point.segment_id}</span></span>
+                <WatchButton at={point.timestamp_seconds} label="Watch ball position" />
+              </div>
+              <label className="check"><input type="checkbox" checked={follow} onChange={event => { setFollow(event.target.checked); setPointIndex(current); }} />Follow the video</label>
+            </div>
+          ) : <EmptyState title="No ball path in this scene">No eligible observed ball positions. Nothing is drawn in their place.</EmptyState>}
+          <p className="note">Scene {selectedScene + 1}: {points.length} displayed points across {segments.size} separate segments. Displayed points are sampled; the whole-clip totals do not change with the scene.</p>
+        </div>
+
+        <div className="stack">
+          <div className="stack stack--sm">
+            <h4>Where the ball was seen</h4>
+            <p className="note">Share of the {secs(data.ball.observed_seconds)} of observed ball time, across all scenes.</p>
+            <Thirds values={data.ball.image_thirds_pct} />
+            <p className="note">Thirds of the camera image, not pitch zones or attack direction.</p>
+          </div>
+          {points.length > 0 && (
+            <Disclosure summary="Ball path data">
+              <DataTable label="Selected scene sampled ball positions">
+                <thead><tr><th scope="col">Time</th><th scope="col" className="num">X image %</th><th scope="col" className="num">Y image %</th><th scope="col" className="num">Segment</th></tr></thead>
+                <tbody>
+                  {points.slice(Math.max(0, current - 5), current + 6).map(p => (
+                    <tr key={`${p.timestamp_seconds}-${p.segment_id}`} className={p === point ? "is-now" : undefined}>
+                      <th scope="row" className="timecell">{secs(p.timestamp_seconds, 2)}</th><td className="num">{pct(p.x_pct, 2)}</td><td className="num">{pct(p.y_pct, 2)}</td><td className="num">{p.segment_id}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </DataTable>
+              <p>Up to 11 points around the marked time. The full sampled path is in Insights JSON and CSV.</p>
+            </Disclosure>
+          )}
+        </div>
+      </div>
+    </Panel>
+  );
 }
 
-function Thirds({ values }: { values: (number | null)[] }) { return <div className="insights-thirds">{thirds.map((label, index) => <div key={label}><span>{label}</span><strong>{pct(values[index])}</strong><div aria-hidden="true"><span style={{ width: values[index] == null ? undefined : `${values[index]}%` }} /></div></div>)}</div>; }
-function DataTable({ label, children }: { label: string; children: React.ReactNode }) { return <div className="insights-table-scroll" tabIndex={0} role="region" aria-label={label}><table>{children}</table></div>; }
-
-function KitEvolution({ data, onSeek }: { data: VideoInsights; onSeek: (time: number) => void }) {
-  const id = useId(); const [kitId, setKitId] = useState(data.kits[0]?.kit ?? ""); const [measure, setMeasure] = useState<"width_pct" | "depth_pct" | "centroid_x_pct" | "centroid_y_pct">("width_pct");
-  const kit = data.kits.find(item => item.kit === kitId); const [windowIndex, setWindowIndex] = useState(0); const [cell, setCell] = useState({ row: 0, column: 0 });
-  const shape = kit?.shape_timeline ?? []; const chosen = shape[Math.min(windowIndex, Math.max(0, shape.length - 1))];
-  const paths: ShapeWindow[][] = []; shape.forEach(window => { if (window[measure] == null) return; const last = paths[paths.length - 1]; if (last && Math.abs(last[last.length - 1].end_seconds - window.start_seconds) < .001) last.push(window); else paths.push([window]); });
-  const totalSupport = shape.reduce((sum, window) => sum + window.supported_seconds, 0); const maxCell = Math.max(1, ...(kit?.image_occupancy_grid.flat() ?? []));
-  const names = { width_pct: "Image width", depth_pct: "Image depth", centroid_x_pct: "Centroid x", centroid_y_pct: "Centroid y" };
-  return <section className="insights-section" aria-labelledby={`${id}-title`}><header className="insights-section-heading"><div><p className="eyebrow">Anonymous · scene-scoped</p><h4 id={`${id}-title`}>Kit-group shape over time</h4><p>Image geometry of at least three visible grouped players. No formation or physical-distance inference.</p></div>{data.kits.length > 0 && <label>Scene and kit group<select value={kitId} onChange={event => { setKitId(event.target.value); setWindowIndex(0); }}>{data.kits.map(item => <option value={item.kit} key={item.kit}>{item.kit}</option>)}</select></label>}</header>
-    {!kit ? <p className="insights-empty" role="status">No supported anonymous kit grouping is available for this clip.</p> : <><div className="insights-kit-summary"><strong>{kit.kit}</strong><span>{n(kit.player_observations, 0)} player observations · visible in {n(kit.visible_frames, 0)} frames / {n(kit.visible_seconds)}s · shape support {n(totalSupport)}s</span></div><div className="insights-chart-pair"><div><label className="insights-measure-select">Shape measure<select value={measure} onChange={event => setMeasure(event.target.value as typeof measure)}>{Object.entries(names).map(([key, label]) => <option value={key} key={key}>{label} · image %</option>)}</select></label>
-      {shape.length > 0 ? <><div className="insights-shape-chart"><span>100 image %</span><svg viewBox="0 0 100 100" preserveAspectRatio="none" role="img" aria-label={`${names[measure]} across five-second windows for ${kit.kit}. Exact values and support are available below.`}><line x1="0" x2="100" y1="50" y2="50" />{paths.map((path, index) => <g key={index}>{path.length > 1 && <polyline points={path.map(window => `${100 * ((window.start_seconds + window.end_seconds) / 2) / data.source_duration_seconds},${100 - window[measure]!}`).join(" ")} />}{path.map(window => <circle key={window.start_seconds} cx={100 * ((window.start_seconds + window.end_seconds) / 2) / data.source_duration_seconds} cy={100 - window[measure]!} r="1" />)}</g>)}</svg><div><span>0% · 0s</span><span>{n(data.source_duration_seconds)}s · full source time</span></div></div><label className="insights-window-select">Inspect supported five-second window<select value={Math.min(windowIndex, shape.length - 1)} onChange={event => setWindowIndex(Number(event.target.value))}>{shape.map((window, index) => <option key={window.start_seconds} value={index}>{n(window.start_seconds)}–{n(window.end_seconds)}s</option>)}</select></label>{chosen && <div className="insights-window-detail" role="status"><strong>{names[measure]}: {pct(chosen[measure])}</strong><p>Supported by {n(chosen.supported_seconds)}s / {chosen.supported_frames} frames, with {n(chosen.mean_visible_players)} mean grouped visible players.</p><button className="ghost" onClick={() => onSeek(chosen.start_seconds)}><Play size={13} /> Watch shape window</button></div>}</> : <p className="insights-empty" role="status">Fewer than three grouped players were sufficiently visible. Shape evolution is unknown for this group.</p>}
-    </div><div><h5>Group image occupancy</h5><div className="insights-kit-grid" role="img" aria-label={`Image occupancy for ${kit.kit}. Brighter cells contain more observations; inspect values with row and column selectors.`}>{kit.image_occupancy_grid.flatMap((row, y) => row.map((count, x) => <span key={`${x}-${y}`} className={cell.row === y && cell.column === x ? "selected" : ""} title={`Row ${y + 1}, column ${x + 1}: ${count} observations`} style={{ backgroundColor: `rgba(156, 197, 193, ${.06 + .85 * count / maxCell})` }} />))}</div><div className="insights-grid-controls"><label>Kit image row<select value={cell.row} onChange={event => setCell({ ...cell, row: Number(event.target.value) })}>{kit.image_occupancy_grid.map((_, row) => <option value={row} key={row}>{row + 1}</option>)}</select></label><label>Kit image column<select value={cell.column} onChange={event => setCell({ ...cell, column: Number(event.target.value) })}>{Array.from({ length: 12 }, (_, col) => <option value={col} key={col}>{col + 1}</option>)}</select></label><output aria-live="polite">{kit.image_occupancy_grid[cell.row]?.[cell.column] ?? "Unknown"} observations</output></div><Thirds values={kit.image_thirds_pct} /><p className="insights-caption">Share of {n(kit.player_observations, 0)} grouped foot-point observations in this scene and kit; not time or pitch territory.</p></div></div>
-      {shape.length > 0 && <details><summary>Exact shape windows & support</summary><DataTable label="Anonymous kit image shape and support by window"><thead><tr><th>Window</th><th>Centroid x / y</th><th>Width / depth</th><th>Support</th><th>Mean grouped players</th></tr></thead><tbody>{shape.map(window => <tr key={window.start_seconds}><th scope="row">{n(window.start_seconds)}–{n(window.end_seconds)}s</th><td>{pct(window.centroid_x_pct)} / {pct(window.centroid_y_pct)}</td><td>{pct(window.width_pct)} / {pct(window.depth_pct)}</td><td>{n(window.supported_seconds)}s / {window.supported_frames} frames</td><td>{n(window.mean_visible_players)}</td></tr>)}</tbody></DataTable></details>}</>}
-  </section>;
+export function Thirds({ values, tone }: { values: (number | null)[]; tone?: "a" | "b" | "x" | null }) {
+  return (
+    <ul className="thirds">
+      {THIRDS.map((label, index) => (
+        <li key={label}>
+          <span>{label}</span>
+          <strong className="mono">{pct(values[index])}</strong>
+          <Meter value={values[index]} tone={tone} />
+        </li>
+      ))}
+    </ul>
+  );
 }
 
-function ControlEstimates({ data, onSeek }: { data: VideoInsights; onSeek: (time: number) => void }) {
-  const id = useId(); const [page, setPage] = useState(0); const [kit, setKit] = useState("all");
+/* ---------- Kit-group shape over time ---------- */
+
+export function KitEvolution({ data }: { data: VideoInsights }) {
+  const kits = useKits();
+  const [kitId, setKitId] = useState(data.kits[0]?.kit ?? "");
+  const [measure, setMeasure] = useState<"width_pct" | "depth_pct" | "centroid_x_pct" | "centroid_y_pct">("width_pct");
+  const kit = data.kits.find(item => item.kit === kitId);
+  const [windowIndex, setWindowIndex] = useState(0);
+  const [cell, setCell] = useState({ row: 0, column: 0 });
+  const shape = kit?.shape_timeline ?? [];
+  const chosen = shape[Math.min(windowIndex, Math.max(0, shape.length - 1))];
+  const paths: ShapeWindow[][] = [];
+  shape.forEach(window => {
+    if (window[measure] == null) return;
+    const last = paths[paths.length - 1];
+    if (last && Math.abs(last[last.length - 1].end_seconds - window.start_seconds) < .001) last.push(window); else paths.push([window]);
+  });
+  const totalSupport = shape.reduce((sum, window) => sum + window.supported_seconds, 0);
+  const maxCell = Math.max(1, ...(kit?.image_occupancy_grid.flat() ?? []));
+  const names = { width_pct: "Image width", depth_pct: "Image depth", centroid_x_pct: "Centre x", centroid_y_pct: "Centre y" };
+  const tone = kits.tone(kit?.kit);
+  const nowSeconds = usePlaybackValue(useCallback((seconds: number) => Math.round(seconds * 4) / 4, []));
+  const x = (window: ShapeWindow) => 100 * ((window.start_seconds + window.end_seconds) / 2) / data.source_duration_seconds;
+
+  return (
+    <Panel
+      title="Kit-group shape over time"
+      subtitle="Image geometry of at least three visible grouped players, in five-second windows. No formation or physical distance is inferred."
+      aside={data.kits.length > 0 && (
+        <Field label="Kit group" className="field--inline">
+          <select value={kitId} onChange={event => { setKitId(event.target.value); setWindowIndex(0); }}>
+            {data.kits.map(item => <option value={item.kit} key={item.kit}>{kits.label(item.kit)}</option>)}
+          </select>
+        </Field>
+      )}
+    >
+      {!kit ? <EmptyState title="No kit groups for this clip">No supported anonymous kit grouping is available. Shape by group is unknown.</EmptyState> : <>
+        <p className="row"><TeamName id={kit.kit} /><span className="note">{num(kit.player_observations, 0)} player observations · visible in {num(kit.visible_frames, 0)} frames / {secs(kit.visible_seconds)} · shape support {secs(totalSupport)}</span></p>
+        <div className={`chartpair ${tone ? `tone-${tone}` : ""}`}>
+          <div className="stack stack--sm">
+            <Field label="Shape measure" className="field--fixed">
+              <select value={measure} onChange={event => setMeasure(event.target.value as typeof measure)}>
+                {Object.entries(names).map(([key, label]) => <option value={key} key={key}>{label} · image %</option>)}
+              </select>
+            </Field>
+            {shape.length > 0 ? <>
+              <figure className="linechart">
+                <span className="linechart__max">100%</span>
+                <svg viewBox="0 0 100 100" preserveAspectRatio="none" role="img" aria-label={`${names[measure]} across five-second windows for ${kits.label(kit.kit)}. Exact values and support are available below.`}>
+                  <line className="linechart__mid" x1="0" x2="100" y1="50" y2="50" />
+                  {paths.map((path, index) => path.length > 1 && <polyline key={index} points={path.map(window => `${x(window)},${100 - window[measure]!}`).join(" ")} />)}
+                  <line className="linechart__now" x1={100 * nowSeconds / data.source_duration_seconds} x2={100 * nowSeconds / data.source_duration_seconds} y1="0" y2="100" />
+                </svg>
+                {paths.flat().map(window => <i key={window.start_seconds} className={`linechart__dot ${window === chosen ? "is-selected" : ""}`} style={{ left: `${x(window)}%`, top: `${100 - window[measure]!}%` }} aria-hidden="true" />)}
+                <figcaption><span>0% · 0 s</span><span>{secs(data.source_duration_seconds)} · full source time</span></figcaption>
+              </figure>
+              <Field label="Five-second window">
+                <select value={Math.min(windowIndex, shape.length - 1)} onChange={event => setWindowIndex(Number(event.target.value))}>
+                  {shape.map((window, index) => <option key={window.start_seconds} value={index}>{range(window.start_seconds, window.end_seconds)}</option>)}
+                </select>
+              </Field>
+              {chosen && (
+                <div className="row row--between" role="status">
+                  <span><strong>{names[measure]}: {pct(chosen[measure])}</strong><br /><span className="note">Supported by {secs(chosen.supported_seconds, 2)} / {chosen.supported_frames} frames, with {num(chosen.mean_visible_players)} mean grouped visible players.</span></span>
+                  <WatchButton at={chosen.start_seconds} label="Watch shape window" />
+                </div>
+              )}
+            </> : <EmptyState title="Shape unknown for this group">Fewer than three grouped players were sufficiently visible.</EmptyState>}
+          </div>
+
+          <div className="stack stack--sm">
+            <h4>Where this group was seen</h4>
+            <div className="heatgrid" role="img" aria-label={`Image occupancy for ${kits.label(kit.kit)}. Brighter cells contain more observations; inspect values with the row and column selectors.`}>
+              {kit.image_occupancy_grid.flatMap((row, y) => row.map((count, column) => (
+                <span key={`${column}-${y}`} className={cell.row === y && cell.column === column ? "is-selected" : ""} title={`Row ${y + 1}, column ${column + 1}: ${count} observations`} style={cssVars({ "--v": .08 + .92 * count / maxCell })} />
+              )))}
+            </div>
+            <div className="toolbar">
+              <Field label="Row"><select aria-label="Kit image row" value={cell.row} onChange={event => setCell({ ...cell, row: Number(event.target.value) })}>{kit.image_occupancy_grid.map((_, row) => <option value={row} key={row}>{row + 1}</option>)}</select></Field>
+              <Field label="Column"><select aria-label="Kit image column" value={cell.column} onChange={event => setCell({ ...cell, column: Number(event.target.value) })}>{Array.from({ length: 12 }, (_, col) => <option value={col} key={col}>{col + 1}</option>)}</select></Field>
+              <output aria-live="polite">{kit.image_occupancy_grid[cell.row]?.[cell.column] ?? "Unknown"} observations</output>
+            </div>
+            <Thirds values={kit.image_thirds_pct} tone={tone} />
+            <p className="note">Share of {num(kit.player_observations, 0)} grouped foot-point observations in this scene and kit group; not time or pitch territory.</p>
+          </div>
+        </div>
+        {shape.length > 0 && (
+          <Disclosure summary="Exact shape windows and support" meta={`${shape.length} windows`}>
+            <DataTable label="Anonymous kit image shape and support by window" stack>
+              <thead><tr><th scope="col">Window</th><th scope="col" className="num">Centre x / y</th><th scope="col" className="num">Width / depth</th><th scope="col" className="num">Support</th><th scope="col" className="num">Mean grouped players</th></tr></thead>
+              <tbody>
+                {shape.map(window => (
+                  <tr key={window.start_seconds} className={nowSeconds >= window.start_seconds && nowSeconds < window.end_seconds ? "is-now" : undefined}>
+                    <th scope="row" className="timecell">{range(window.start_seconds, window.end_seconds)}</th>
+                    <td className="num" data-label="Centre x / y">{pct(window.centroid_x_pct, 2)} / {pct(window.centroid_y_pct, 2)}</td>
+                    <td className="num" data-label="Width / depth">{pct(window.width_pct, 2)} / {pct(window.depth_pct, 2)}</td>
+                    <td className="num" data-label="Support">{secs(window.supported_seconds, 2)} / {window.supported_frames} frames</td>
+                    <td className="num" data-label="Mean grouped players">{num(window.mean_visible_players, 2)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </DataTable>
+          </Disclosure>
+        )}
+      </>}
+    </Panel>
+  );
+}
+
+/* ---------- Strict near-foot observations ---------- */
+
+export function ControlEstimates({ data }: { data: VideoInsights }) {
+  const kits = useKits();
+  const playback = usePlayback();
+  const [page, setPage] = useState(0);
+  const [kit, setKit] = useState("all");
   const spells = data.control.spells.filter(spell => kit === "all" || (kit === "unknown" ? !spell.kit : spell.kit === kit));
-  const pages = Math.max(1, Math.ceil(spells.length / 6)); const current = Math.min(page, pages - 1);
+  const pages = Math.max(1, Math.ceil(spells.length / 6));
+  const current = Math.min(page, pages - 1);
   const unknownKitSeconds = Math.max(0, data.control.estimated_control_seconds - data.control.grouped_control_seconds);
-  return <section className="insights-section" aria-labelledby={`${id}-title`}><header className="insights-section-heading"><div><p className="eyebrow">Sustained temporal support</p><h4 id={`${id}-title`}>Strict near-foot control observations</h4><p>Not match possession. Unknown intervals stay unassigned.</p></div><span className="studio-status draft">{n(data.control.unknown_seconds)}s unknown / {n(data.source_duration_seconds)}s full source</span></header>
-    {data.control.estimated_control_seconds > 0 ? <><div className="insights-control-denominator"><strong>{n(data.control.grouped_control_seconds)}s assigned to kit groups</strong><span>{pct(data.control.grouped_coverage_pct)} of the full clip · {n(unknownKitSeconds)}s estimated control with unknown kit · {n(data.control.unknown_seconds)}s no supported controller.</span></div>
-      {data.control.by_kit.length > 0 ? <div className="insights-control-shares">{data.control.by_kit.map(group => <article key={group.kit}><h5>{group.kit}</h5><strong>{n(group.estimated_seconds)}s</strong><p>{pct(group.share_of_known_control_pct)} of known grouped control · {pct(group.clip_share_pct)} of full clip</p><div aria-hidden="true"><span style={{ width: group.share_of_known_control_pct == null ? undefined : `${group.share_of_known_control_pct}%` }} /></div></article>)}</div> : <p className="insights-empty">Supported control has no reliable kit assignment. Group shares are unknown.</p>}
-      <label className="insights-spell-filter">Filter supported spells<select value={kit} onChange={event => { setKit(event.target.value); setPage(0); }}><option value="all">All supported spells</option><option value="unknown">Unknown kit only</option>{data.control.by_kit.map(group => <option value={group.kit} key={group.kit}>{group.kit}</option>)}</select></label>
-      <div className="insights-spells">{spells.slice(current * 6, (current + 1) * 6).map(spell => <button key={spell.id} onClick={() => onSeek(spell.start_seconds)}><Play size={14} /><span><strong>{n(spell.start_seconds)}–{n(spell.end_seconds)}s · {spell.kit ?? "Unknown kit"}</strong><small>Temporary {spell.track_id} · {n(spell.observed_seconds)}s / {spell.observed_frames} observed frames · scene {spell.scene_id}</small></span><ArrowRight size={15} /></button>)}</div>{!spells.length && <p role="status">No supported spells match this kit selection.</p>}<Pager current={current} pages={pages} count={spells.length} noun="spells" onPage={setPage} />
-    </> : <p className="insights-empty" role="status">Control is unknown throughout this clip. No consecutive association met the minimum support rule; no kit-control shares or possession split can be established.</p>}
-    <p className="insights-caption">Kit shares divide only {n(data.control.grouped_control_seconds)}s of group-assigned control. Support requires at least {n(Number(data.parameters.min_control_seconds ?? .24))}s and {n(Number(data.parameters.min_control_frames ?? 3), 0)} observed frames. This is an image-based estimate for review.</p>
-  </section>;
+
+  return (
+    <div className="stack">
+      <p>A stricter, separate rule: the ball clearly nearest one player's feet for a sustained run of frames. It is <strong>not</strong> match possession, and unknown intervals stay unassigned.</p>
+      <p className="facts">
+        <span>Supported<b>{secs(data.control.estimated_control_seconds)}</b></span>
+        <span>Unknown<b>{secs(data.control.unknown_seconds)}</b></span>
+        <span>Full source<b>{secs(data.source_duration_seconds)}</b></span>
+      </p>
+      {data.control.estimated_control_seconds > 0 ? <>
+        <p className="note note--boxed">
+          <strong>{secs(data.control.grouped_control_seconds)} assigned to kit groups</strong> · {pct(data.control.grouped_coverage_pct)} of the full clip · {secs(unknownKitSeconds)} of estimated control with an unknown kit · {secs(data.control.unknown_seconds)} with no supported controller.
+        </p>
+        {data.control.by_kit.length > 0 ? (
+          <ul className="teamrows">
+            {data.control.by_kit.map(group => (
+              <li key={group.kit} className="teamrow">
+                <div className="teamrow__name"><TeamName id={group.kit} /></div>
+                <div className="teamrow__figure"><strong>{secs(group.estimated_seconds)}</strong><span>{pct(group.share_of_known_control_pct)} of known grouped control · {pct(group.clip_share_pct)} of the full clip</span></div>
+                <div className="teamrow__bar"><Meter value={group.share_of_known_control_pct} tone={kits.tone(group.kit)} /></div>
+              </li>
+            ))}
+          </ul>
+        ) : <p className="note">Supported control has no reliable kit assignment. Group shares are unknown.</p>}
+        <Field label="Filter supported spells" className="field--fixed">
+          <select value={kit} onChange={event => { setKit(event.target.value); setPage(0); }}>
+            <option value="all">All supported spells</option>
+            <option value="unknown">Unknown kit only</option>
+            {data.control.by_kit.map(group => <option value={group.kit} key={group.kit}>{kits.label(group.kit)}</option>)}
+          </select>
+        </Field>
+        <ul className="rowlist">
+          {spells.slice(current * 6, (current + 1) * 6).map(spell => (
+            <li key={spell.id}>
+              <button type="button" className="rowlink" onClick={() => playback.seek(spell.start_seconds)}>
+                <Play size={13} fill="currentColor" aria-hidden="true" />
+                <span><strong><span className="mono">{range(spell.start_seconds, spell.end_seconds)}</span> · {kits.label(spell.kit, "Unknown kit")}</strong><small>Track {spell.track_id} · {secs(spell.observed_seconds, 2)} / {spell.observed_frames} observed frames · scene {spell.scene_id + 1}</small></span>
+                <ArrowRight size={15} aria-hidden="true" />
+              </button>
+            </li>
+          ))}
+        </ul>
+        {!spells.length && <p className="note" role="status">No supported spells match this kit selection.</p>}
+        <Pager page={current} pages={pages} count={spells.length} noun="spells" onPage={setPage} />
+      </> : <EmptyState title="Near-foot control is unknown throughout this clip">No run of consecutive frames met the minimum support rule, so no kit shares or possession split can be established.</EmptyState>}
+      <p className="note">
+        Kit shares divide only the {secs(data.control.grouped_control_seconds, 2)} of group-assigned control. Support requires at least {secs(Number(data.parameters.min_control_seconds ?? .24), 2)} and{" "}
+        {num(Number(data.parameters.min_control_frames ?? 3), 0)} observed frames. This is an image-based estimate for review.
+      </p>
+    </div>
+  );
 }
 
-function CandidateQueue({ data, onSeek }: { data: VideoInsights; onSeek: (time: number) => void }) {
-  const id = useId(); const [type, setType] = useState("all"); const [search, setSearch] = useState(""); const [page, setPage] = useState(0);
-  const matches = data.candidates.filter(event => (type === "all" || event.type === type) && `${event.from_track} ${event.to_track} ${event.from_kit} ${event.to_kit} ${event.evidence}`.toLowerCase().includes(search.trim().toLowerCase()));
-  const pages = Math.max(1, Math.ceil(matches.length / 6)); const current = Math.min(page, pages - 1);
-  return <section className="insights-section" aria-labelledby={`${id}-title`}><header className="insights-section-heading"><div><p className="eyebrow">Evidence queue · not approved events</p><h4 id={`${id}-title`}>Possible passes & turnovers</h4><p>Review prompts from observed control changes. Nothing here is counted as a completed pass or automatically approved.</p></div></header>
-    <div className="insights-queue-tools"><label>Candidate type<select value={type} onChange={event => { setType(event.target.value); setPage(0); }}><option value="all">All possible events</option><option value="possible_pass">Possible passes</option><option value="possible_turnover">Possible turnovers</option></select></label><label>Find a candidate<input type="search" value={search} onChange={event => { setSearch(event.target.value); setPage(0); }} placeholder="Temporary track or kit group" /></label></div>
-    {matches.length ? <div className="insights-candidates">{matches.slice(current * 6, (current + 1) * 6).map(event => <article key={event.id} className={event.evidence_level === "partial_tracking_review_only" ? "sequence-partial-candidate" : undefined}><header><span className="studio-status model">{candidateName(event.type)} · unreviewed</span><strong>{n(event.timestamp_seconds)}s</strong></header>{event.evidence_level === "partial_tracking_review_only" && <p className="sequence-review-only">Partial tracking: review-only proposal. Excluded from possession estimates.</p>}<p><strong>{event.from_track} → {event.to_track}</strong> · {event.from_kit} → {event.to_kit}</p><p>{n(event.supported_control_seconds)}s supported control at both ends · {event.observed_bridge_frames} observed bridge frames · scene {event.scene_id}</p>{event.from_team && <p>Estimated group/team: {event.from_team} → {event.to_team ?? "Unknown"}</p>}{event.ball_support_pct !== undefined && <p>Observed ball support {pct(event.ball_support_pct)} · total missing-ball time {n(event.missing_ball_seconds)}s{event.max_missing_ball_gap_seconds !== undefined ? ` (longest gap ${n(event.max_missing_ball_gap_seconds)}s)` : ""} · receiver: {event.receiver_support?.replaceAll("_", " ") ?? "Unknown"}</p>}{Boolean(event.quality_flags?.length) && <p className="sequence-quality-flags">Review flags: {event.quality_flags!.map(flag => flag.replaceAll("_", " ")).join(" · ")}</p>}<p className="insights-caption">{event.evidence}</p><button className="ghost" onClick={() => onSeek(event.evidence_start_seconds)}><Play size={13} /> Review evidence {n(event.evidence_start_seconds)}–{n(event.evidence_end_seconds)}s</button></article>)}</div> : <p className="insights-empty" role="status">{data.candidates.length ? "No possible events match these filters." : "No possible events have sufficient supporting evidence. Pass and turnover totals remain unknown; inspect the footage and add verified annotations manually."}</p>}
-    <Pager current={current} pages={pages} count={matches.length} noun="candidates" onPage={setPage} />
-  </section>;
+/* ---------- To review: possible passes & turnovers ---------- */
+
+export function CandidateQueue({ data }: { data: VideoInsights }) {
+  const kits = useKits();
+  const id = useId();
+  const [type, setType] = useState("all");
+  const [search, setSearch] = useState("");
+  const [page, setPage] = useState(0);
+  const matches = data.candidates.filter(event => (type === "all" || event.type === type) && `${event.from_track} ${event.to_track} ${event.from_kit} ${event.to_kit} ${event.evidence} ${kits.label(event.from_kit)} ${kits.label(event.to_kit)}`.toLowerCase().includes(search.trim().toLowerCase()));
+  const pages = Math.max(1, Math.ceil(matches.length / 6));
+  const current = Math.min(page, pages - 1);
+
+  return (
+    <Panel
+      title="To review: possible passes & turnovers"
+      subtitle="Prompts from observed changes of control, for a person to check. Nothing here is counted as a completed pass or approved automatically."
+      aside={<span className="chip chip--plain" title="Technical name: evidence queue · not approved events">{data.candidates.length} to review · not counted</span>}
+    >
+      <div className="toolbar">
+        <Field label="Type" className="field--fixed">
+          <select value={type} onChange={event => { setType(event.target.value); setPage(0); }}>
+            <option value="all">All possible events</option>
+            <option value="possible_pass">Possible passes</option>
+            <option value="possible_turnover">Possible turnovers</option>
+          </select>
+        </Field>
+        <Field label="Find a possible event">
+          <input type="search" value={search} onChange={event => { setSearch(event.target.value); setPage(0); }} placeholder="Track or kit group" />
+        </Field>
+      </div>
+      {matches.length ? (
+        <ul className="cards" aria-labelledby={id}>
+          {matches.slice(current * 6, (current + 1) * 6).map(event => (
+            <li key={event.id} className={`card ${event.evidence_level === "partial_tracking_review_only" ? "card--partial" : ""}`}>
+              <header className="row row--between">
+                <span className="chip chip--unknown"><i className="chip__swatch" aria-hidden="true" />{candidateName(event.type)} · unreviewed</span>
+                <strong className="mono">{secs(event.timestamp_seconds, 2)}</strong>
+              </header>
+              {event.evidence_level === "partial_tracking_review_only" && <p className="note note--boxed">Partial tracking: a review-only proposal. Excluded from possession estimates.</p>}
+              <p><strong>Track {event.from_track} → {event.to_track}</strong> · <TeamName id={event.from_kit} /> → <TeamName id={event.to_kit} /></p>
+              <p className="note">{secs(event.supported_control_seconds, 2)} supported control at both ends · {event.observed_bridge_frames} observed bridge frames · scene {event.scene_id + 1}</p>
+              {event.from_team && <p className="note">Estimated group or team: {kits.label(event.from_team)} → {kits.label(event.to_team, "Unknown")}</p>}
+              {event.ball_support_pct !== undefined && (
+                <p className="note">
+                  Ball seen for {pct(event.ball_support_pct)} of it · ball missing for {secs(event.missing_ball_seconds, 2)}
+                  {event.max_missing_ball_gap_seconds !== undefined ? ` (longest gap ${secs(event.max_missing_ball_gap_seconds, 2)})` : ""} · receiver: {event.receiver_support ? words(event.receiver_support) : "Unknown"}
+                </p>
+              )}
+              {Boolean(event.quality_flags?.length) && <p className="note">Review flags: {event.quality_flags!.map(words).join(" · ")}</p>}
+              <p className="note">{event.evidence}</p>
+              <div><WatchButton at={event.evidence_start_seconds} label={`Review evidence ${range(event.evidence_start_seconds, event.evidence_end_seconds)}`} /></div>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <EmptyState title={data.candidates.length ? "No possible events match these filters" : "Nothing to review here"}>
+          {data.candidates.length ? "Try another type or search." : "No possible events have sufficient supporting evidence. Pass and turnover totals remain unknown; inspect the footage and add verified annotations under Review."}
+        </EmptyState>
+      )}
+      <span id={id} className="sr-only">Possible passes and turnovers to review</span>
+      <Pager page={current} pages={pages} count={matches.length} noun="possible events" onPage={setPage} />
+    </Panel>
+  );
 }
-function Pager({ current, pages, count, noun, onPage }: { current: number; pages: number; count: number; noun: string; onPage: (page: number) => void }) { return <div className="studio-pagination"><span>{count} {noun} · page {current + 1} of {pages}</span><button className="ghost" disabled={current === 0} onClick={() => onPage(current - 1)}>Previous {noun}</button><button className="ghost" disabled={current >= pages - 1} onClick={() => onPage(current + 1)}>Next {noun}</button></div>; }
+
+/* ---------- Definitions ---------- */
+
+/** The pipeline's own definitions, optionally limited to some keys. Parameters are listed in full. */
+export function InsightDefinitions({ data, only, parameters = false }: { data: VideoInsights; only?: string[]; parameters?: boolean }) {
+  const entries = Object.entries(data.definitions).filter(([name]) => !only || only.includes(name));
+  return <>
+    {entries.map(([name, text]) => <p key={name}><strong>{sentence(name)}: </strong>{text}</p>)}
+    {parameters && <div><h5>Parameters</h5><dl className="deflist">{Object.entries(data.parameters).map(([key, value]) => <div key={key}><dt>{words(key)}</dt><dd>{String(value)}</dd></div>)}</dl></div>}
+  </>;
+}
