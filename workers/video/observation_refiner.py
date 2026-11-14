@@ -35,6 +35,16 @@ class ObservationRefiner:
             base=expanded_tracker(base,expansion)
         self.tracker=base(IterableSimpleNamespace(**config))
         self.tracking_config=dict(config,iou_expansion=expansion)
+        # Keep the tracker's own frame-to-frame camera warp so offline stages can reuse it for free.
+        self.camera_warp=None
+        estimator=getattr(self.tracker,'gmc',None)
+        if estimator is not None:
+            original=estimator.apply
+            def capture(*args,**kwargs):
+                warp=original(*args,**kwargs)
+                self.camera_warp=np.asarray(warp,dtype=float).tolist()
+                return warp
+            estimator.apply=capture
         self.ball_continuity=BallContinuity(sample_fps)
         self.jersey_teams=JerseyTeams()
         self.frame_number,self.scene_id,self.previous_scene=0,0,None
