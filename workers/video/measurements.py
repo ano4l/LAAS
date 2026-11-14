@@ -161,10 +161,16 @@ class VideoMeasurements:
 
 def from_tracking(rows, metadata, summary):
     """Backfill existing completed short-video runs from their FULL tracking file."""
+    from workers.video.track_linking import linked_view
+    rows, identity_source = linked_view(rows)
     fps = summary["sample_fps"]
     calculator = VideoMeasurements(metadata, fps)
     groups = {index: list(group) for index, group in groupby(rows, key=lambda row: row["frame_idx"])}
     stride = max(1, round(metadata["fps"] / fps))
     for index in range(0, summary["decoded_frames"], stride):
         calculator.observe(index, groups.get(index, []))
-    return calculator.finish()
+    result = calculator.finish()
+    if identity_source == "linked_track_id":
+        # Track entries are offline-linked identities (L…), still anonymous and unreviewed.
+        result["track_identity"] = identity_source
+    return result

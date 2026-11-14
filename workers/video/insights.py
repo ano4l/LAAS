@@ -256,12 +256,17 @@ class VideoInsights:
 
 
 def from_tracking(rows, metadata, summary, context=None):
+    from workers.video.track_linking import linked_view
+    rows, identity_source = linked_view(rows)
     calc = VideoInsights(metadata, summary["sample_fps"], context)
     groups = {index: list(group) for index, group in groupby(sorted(rows, key=lambda r: r["frame_idx"]), key=lambda r: r["frame_idx"])}
     stride = max(1, round(metadata["fps"]/summary["sample_fps"]))
     for index in range(0, summary["decoded_frames"], stride):
         calc.observe(index, groups.get(index, []))
-    return calc.finish()
+    result = calc.finish()
+    if identity_source == "linked_track_id":
+        result["track_identity"] = identity_source
+    return result
 
 
 def ensure_insights(manifest, directory):

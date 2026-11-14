@@ -17,8 +17,8 @@ import cv2
 from workers.video.yolo_adapter import model_path, yolo_capabilities
 from workers.video.detector import FootballDetector
 from workers.video.accuracy import analysis_settings
-from workers.video.measurements import VideoMeasurements
-from workers.video.insights import VideoInsights
+from workers.video import insights as video_insights, measurements as video_measurements
+from workers.video.track_linking import AppearanceBank, PEOPLE, apply_links, link_tracks, write_links
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -76,9 +76,12 @@ def run_real_analysis(input_video: Path, output_root: Path, progress=None) -> di
     counts, track_counts = Counter(), Counter()
     track_classes, first_seen, last_seen = {}, {}, {}
     preview, analyzed, decoded, ball_frames = [], 0, 0, 0
-    measurements = VideoMeasurements(metadata, metadata["fps"] / stride)
-    insights = VideoInsights(metadata, metadata["fps"] / stride)
     preview_stride = max(1, math.ceil(metadata["frame_count"] / stride / 70))
+    embedder = None
+    if os.getenv("TRACK_EMBEDDINGS", "off") == "detector":  # opt-in: small measured gain, extra compute
+        from workers.video.reid import BackboneEmbedder
+        embedder = BackboneEmbedder(model_path(ROOT), device=device)
+    appearance, link_rows = AppearanceBank(embedder=embedder), []
     last_rows = []
     try:
         with (out_dir / "encoder.log").open("wb") as log, (out_dir / "tracking.json").open("w", encoding="utf-8") as tracking_file:
@@ -115,8 +118,9 @@ def run_real_analysis(input_video: Path, output_root: Path, progress=None) -> di
                                 tracking_file.write(",\n")
                             tracking_file.write(json.dumps(row))
                             first = False
-                        measurements.observe(frame_idx, last_rows)
-                        insights.observe(frame_idx, last_rows)
+                        appearance.observe(frame, last_rows)  # before overlays are painted on the frame
+                        link_rows.extend({k: r.get(k) for k in ("frame_idx", "track_id", "object_type", "bbox", "team", "scene_id")}
+                                         for r in last_rows if r.get("track_id") and r["object_type"] in PEOPLE)
                         ball_frames += int(any(r["object_type"] in {"ball", "sports ball"} for r in last_rows))
                         if analyzed % preview_stride == 0:
                             preview.extend(last_rows)
@@ -153,11 +157,21 @@ def run_real_analysis(input_video: Path, output_root: Path, progress=None) -> di
                 raise RuntimeError("Video encoding failed; see the run's encoder.log.")
         if decoded < metadata["frame_count"] - max(2, stride):
             raise RuntimeError(f"Video decoding stopped at frame {decoded} of {metadata['frame_count']}. Re-export the source video.")
+        if progress:
+            progress("Linking fragmented tracks", 0.96)
+        linking = link_tracks(link_rows, appearance.descriptors(), metadata["fps"], embeddings=appearance.embeddings())
+        linking["summary"]["embedding_model"] = embedder.name if embedder else None
+        apply_links(out_dir / "tracking.json", linking)
+        write_links(out_dir, linking)
+        # Analytics are computed after linking so they follow linked identities, not raw tracker IDs.
+        linked_rows = json.loads((out_dir / "tracking.json").read_text(encoding="utf-8"))
+        scope = dict(sample_fps=metadata["fps"] / stride, decoded_frames=decoded)
         warnings = ["Detections and track IDs are unreviewed model predictions, not verified player identities.",
                     "Jersey groups are anonymous colour estimates, not verified teams. Passes, tackles, shots, goals, possession and xG are not verified.",
                     "Coordinates are image pixels. Distance, speed and pitch heatmaps require camera calibration.",
                     "Camera cuts and occlusion can split or switch track IDs. Output video has no audio.",
                     "Timestamps use the reported frame rate. Normalize variable-frame-rate footage before precise temporal review."]
+        warnings.append("linked_track_id joins track fragments offline using timing, image position and kit colour. Links are unreviewed and can join different players; track_id keeps the original tracker output. Measurements and insights use the linked identities; the annotated video shows original tracker IDs.")
         warnings.append("Ball candidates pass geometry filtering; continuity selection is provisional, not a confirmed trajectory. Missing positions remain missing; none are interpolated.")
         if stride > 1:
             warnings.append("Only sampled frames have detection overlays. Unsampled frames are not analysed or interpolated.")
@@ -184,6 +198,8 @@ def run_real_analysis(input_video: Path, output_root: Path, progress=None) -> di
         summary["ball_processing"] = "raw_detection_independent_of_person_tracker"
         summary["quality_filters"] = getattr(detector, "quality_counts", {})
         summary["quality_version"] = "research-association-2"
+        summary["track_linking"] = linking["summary"]
+        summary["linked_tracks"] = linking["identities"]
         if rescue_weights:
             with rescue_weights.open('rb') as stream:
                 summary['secondary_ball_model_sha256']=hashlib.file_digest(stream,'sha256').hexdigest()
@@ -194,8 +210,9 @@ def run_real_analysis(input_video: Path, output_root: Path, progress=None) -> di
                 summary["ball_model_sha256"] = hashlib.file_digest(weights, "sha256").hexdigest()
             summary["ball_model"] = ball_weights.name
         metrics = dict(possession=dict(home_pct=None, away_pct=None, timeline=[]), teams={}, players=[], events=[],
-                       data_quality=dict(mode="yolo_bytetrack"), phase_count=0, video_measurements=measurements.finish(),
-                       video_insights=insights.finish())
+                       data_quality=dict(mode="yolo_bytetrack"), phase_count=0,
+                       video_measurements=video_measurements.from_tracking(linked_rows, metadata, scope),
+                       video_insights=video_insights.from_tracking(linked_rows, metadata, scope))
         report = dict(title="Video detection and tracking", summary=f"Analyzed {analyzed} frames across {decoded / metadata['fps']:.1f} seconds. Found {len(track_counts)} temporary object tracks.", recommendations=[])
         manifest = dict(schema_version="1.0", run_id=run_id, engine="yolo_bytetrack", metadata=metadata,
                         tracking=preview, detection_summary=summary, warnings=warnings, metrics=metrics, phases=[], report=report,

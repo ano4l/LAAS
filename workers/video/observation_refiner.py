@@ -25,8 +25,16 @@ class ObservationRefiner:
         config.update(track_high_thresh=max(.25,object_confidence),track_low_thresh=.1,
                       new_track_thresh=max(.5,object_confidence))
         if self.backend=='botsort':config.update(with_reid=False,gmc_method='sparseOptFlow')
-        self.tracking_config=config
-        self.tracker=(BOTSORT if self.backend=='botsort' else BYTETracker)(IterableSimpleNamespace(**config))
+        # Expanded-box matching keeps small, fast players on one track (see expanded_iou.py).
+        expansion=float(os.getenv('TRACK_IOU_EXPANSION','0.5'))
+        if not 0<=expansion<=1:
+            raise ValueError('TRACK_IOU_EXPANSION must be between 0 and 1')
+        base=BOTSORT if self.backend=='botsort' else BYTETracker
+        if expansion:
+            from workers.video.expanded_iou import expanded_tracker
+            base=expanded_tracker(base,expansion)
+        self.tracker=base(IterableSimpleNamespace(**config))
+        self.tracking_config=dict(config,iou_expansion=expansion)
         self.ball_continuity=BallContinuity(sample_fps)
         self.jersey_teams=JerseyTeams()
         self.frame_number,self.scene_id,self.previous_scene=0,0,None
