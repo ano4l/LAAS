@@ -13,7 +13,9 @@ type Labels = { schema_version: string; run_id: string; source_sha256: string | 
 type Identity = { track_id: string; object_type: string; team: string | null; first_seen_ms: number; last_seen_ms: number; fragments: number };
 /** Two identities that could be one player, for a person to check. Never applied automatically. */
 type Suggestion = { from_track: string; to_track: string; gap_seconds: number; from_last_seen_seconds: number; to_first_seen_seconds: number; same_kit: boolean | null; basis: "pitch" | "image"; distance_m: number | null; distance_heights: number | null; rivals: number };
-type Suggestions = { suggestions: Suggestion[]; suggestions_total: number; appearances?: Record<string, [number, number][]>; reason?: string };
+/** A shirt number an experimental text reader saw repeatedly on one identity. A question for a person, not a recognition. */
+type NumberProposal = { track_id: string; proposed_number: string; agreement: number; confident_reads: number; crops_read: number };
+type Suggestions = { suggestions: Suggestion[]; suggestions_total: number; appearances?: Record<string, [number, number][]>; reason?: string; shirt_numbers?: { reader: string | null; proposals: NumberProposal[] } };
 type RosterEntry = { name: string; number: string | null; clips: number };
 
 const BANDS: [string, string][] = [["walking", "Standing or walking (under 2 m/s)"], ["jogging", "Jogging (2 to 4 m/s)"], ["running", "Running (4 to 5.5 m/s)"], ["fast_running", "Fast running (5.5 m/s and over)"]];
@@ -151,6 +153,8 @@ export function PlayerProfiles({ result, api, authHeaders, selected, onSelect }:
     </optgroup>
   </>;
 
+  const readNumbers = (suggested?.shirt_numbers?.proposals ?? []).filter(row => trackIds.includes(row.track_id));
+
   function join(row: Suggestion) {
     const mine = trackIds.includes(row.from_track) ? row.from_track : row.to_track, theirs = mine === row.from_track ? row.to_track : row.from_track;
     const theirOwner = owner(theirs);
@@ -202,6 +206,24 @@ export function PlayerProfiles({ result, api, authHeaders, selected, onSelect }:
             {kitIds.length > 1 && " · These identities were sorted into different kit groups. Check the name against the footage."}
           </p>
         </div>
+
+        {readNumbers.length > 0 && (
+          <div className="note note--boxed">
+            <p>An experimental text reader saw a number on this player’s shirt. It was trained on general text, not shirts, and has not been checked here. Watch the footage before using it.</p>
+            <ul className="itemlist">
+              {readNumbers.map(row => (
+                <li key={row.track_id}>
+                  <span><span className="mono">{row.track_id}</span>: read <strong>{row.proposed_number}</strong> in {Math.round(row.agreement * row.confident_reads)} of {row.confident_reads} confident reads ({row.crops_read} crops tried)</span>
+                  <span className="row">
+                    <WatchButton at={(byId.get(row.track_id)?.first_seen_ms ?? 0) / 1000} label="Watch" describe={`Watch ${row.track_id} to check the number`} />
+                    <button type="button" className="btn btn--secondary btn--sm" disabled={pending || !saved} onClick={() => { if (player) edit(player.key, { number: row.proposed_number }); else setNewNumber(row.proposed_number); }}>Use {row.proposed_number}</button>
+                  </span>
+                </li>
+              ))}
+            </ul>
+            {!player && <p>“Use” fills in the number below; the player still needs a name before anything is saved.</p>}
+          </div>
+        )}
 
         <div className="tiles tiles--four tiles--compact">
           <StatTile label="On screen" value={own.observedSeconds == null ? DASH : num(own.observedSeconds)} unit="s" evidence={own.observedSeconds == null ? "unknown" : "seen"}
@@ -363,7 +385,7 @@ export function PlayerProfiles({ result, api, authHeaders, selected, onSelect }:
           </div>
         )}
 
-        <Disclosure variant="panel" summary={player ? "Edit this player’s name" : "Name this player"} meta={dirty ? "Unsaved" : undefined} defaultOpen={dirty}>
+        <Disclosure variant="panel" summary={player ? "Edit this player’s name" : "Name this player"} meta={dirty ? "Unsaved" : undefined} defaultOpen={dirty || Boolean(newNumber)}>
           <fieldset className="stack profile__form" disabled={pending || !saved}>
             <legend className="sr-only">Name for {heading}</legend>
             <p className="muted">Watch the footage first. Type a name only when you can tell who this is. The tracker often splits one player into several identities, so you can add more identities to the same player.{roster.length ? " Names you saved on other clips are offered as you type; picking one does not match anyone automatically." : ""}</p>

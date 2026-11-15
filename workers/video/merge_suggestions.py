@@ -154,4 +154,11 @@ def suggest_for_run(directory, manifest):
         pitch = {int(index): record for index, record in frames.items()}
     rows = json.loads((directory / "tracking.json").read_text(encoding="utf-8"))
     fps = manifest.get("metadata", {}).get("fps")
-    return dict(suggest(rows, fps, pitch), run_id=manifest.get("run_id"), appearances=appearances(rows, fps))
+    out = dict(suggest(rows, fps, pitch), run_id=manifest.get("run_id"), appearances=appearances(rows, fps))
+    # Shirt-number proposals exist only where an operator has run the experimental reader on this clip.
+    if (directory / "shirt-numbers.json").is_file():
+        numbers = json.loads((directory / "shirt-numbers.json").read_text(encoding="utf-8"))
+        out["shirt_numbers"] = dict(reader=numbers.get("reader"), review_status="unreviewed", limitations=numbers.get("limitations", []),
+                                    proposals=[{key: p.get(key) for key in ("track_id", "proposed_number", "agreement", "confident_reads", "crops_read")}
+                                               for p in numbers.get("proposals", []) if p.get("proposed_number")])
+    return out
