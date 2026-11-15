@@ -77,7 +77,8 @@ def analyze(request_id: str, profile: str = "accurate", tile_size: int = 0):
     return dict(run_id=result["run_id"], sha256=hashes)
 
 
-@app.function(image=image, gpu="L4", cpu=2, memory=8192, volumes={"/jobs": volume},
+# Falls back to a T4 (cheaper, slower) when no L4 is free: this job is not urgent and only runs one small model.
+@app.function(image=image, gpu=["L4", "T4"], cpu=2, memory=8192, volumes={"/jobs": volume},
               min_containers=0, max_containers=1, scaledown_window=2, timeout=1800,
               startup_timeout=180, retries=0)
 def backfill_pitch(request_ids: str = "", force: bool = False):

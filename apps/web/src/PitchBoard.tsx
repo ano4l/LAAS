@@ -9,6 +9,9 @@ export type BoardGroup = {
   players: { track_id: string; x_m: number; y_m: number }[];
 };
 
+/** Whole-clip presence of one group, in grid cells over the pitch. `coverage` is how long the camera saw each cell. */
+export type BoardHeat = { cells: number[][]; coverage: number[][]; tone: "a" | "b" | "x" | null; label: string };
+
 const PAD = 4.5; // metres drawn around the pitch; estimated positions up to 3 m outside the outline are still shown
 
 /**
@@ -16,9 +19,12 @@ const PAD = 4.5; // metres drawn around the pitch; estimated positions up to 3 m
  * 105 x 68 m pitch from landmarks a model found in that frame. The part of the pitch the camera did not
  * cover is dimmed, because nothing is known about players there.
  */
-export function PitchBoard({ length, width, groups, visibleArea, showIds, label }: {
-  length: number; width: number; groups: BoardGroup[]; visibleArea: [number, number][]; showIds: boolean; label: string;
+export function PitchBoard({ length, width, groups, visibleArea, showIds, label, heat }: {
+  length: number; width: number; groups: BoardGroup[]; visibleArea: [number, number][]; showIds: boolean; label: string; heat?: BoardHeat;
 }) {
+  const heatRows = heat?.cells.length ?? 0, heatColumns = heat?.cells[0]?.length ?? 0;
+  const cellL = heatColumns ? length / heatColumns : 0, cellW = heatRows ? width / heatRows : 0;
+  const heatMax = heat ? Math.max(0, ...heat.cells.flat()) : 0;
   const id = useId();
   const midX = length / 2, midY = width / 2;
   const areaW = 40.32, areaL = 16.5, goalW = 18.32, goalL = 5.5, radius = 9.15, spot = 11, goalMouth = 7.32;
@@ -36,6 +42,21 @@ export function PitchBoard({ length, width, groups, visibleArea, showIds, label 
         <g className="pitchboard__stripes" aria-hidden="true">
           {stripes.map(index => <rect key={index} x={index * length / 20} width={length / 20} height={width} />)}
         </g>
+        {heat && heatRows > 0 && heatColumns > 0 && (
+          <g className={`pitchboard__heat ${heat.tone ? `tone-${heat.tone}` : ""}`}>
+            {heat.cells.flatMap((row, r) => row.map((value, c) => {
+              const seen = heat.coverage[r]?.[c] ?? 0;
+              if (seen > 0 && value <= 0) return null;
+              return (
+                <rect key={`${r}-${c}`} className={seen > 0 ? "pitchboard__cell" : "pitchboard__cell pitchboard__cell--unseen"}
+                  x={c * cellL} y={r * cellW} width={cellL} height={cellW}
+                  style={seen > 0 && heatMax > 0 ? { fillOpacity: .12 + .78 * Math.sqrt(value / heatMax) } : undefined}>
+                  <title>{seen > 0 ? `${heat.label}: about ${value.toFixed(1)} player-seconds here (estimate); in the camera’s view for ${seen.toFixed(1)} s` : "Never in the camera’s view: unknown"}</title>
+                </rect>
+              );
+            }))}
+          </g>
+        )}
         <g className="pitchboard__lines" aria-hidden="true">
           <rect width={length} height={width} />
           <line x1={midX} x2={midX} y1="0" y2={width} />

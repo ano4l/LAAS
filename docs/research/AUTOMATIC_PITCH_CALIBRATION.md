@@ -1,6 +1,6 @@
 # Automatic pitch calibration (estimates for the shape view)
 
-Status: first version, unvalidated. It feeds only the estimated pitch map in the Shape tab. It does not produce distances, speeds or heatmaps, and the measured fixed-camera path in `FIXED_CAMERA_CALIBRATION.md` is unchanged.
+Status: first version, unvalidated. It feeds the estimated pitch map, heat map, distance and speed figures in the Shape tab, all labelled as estimates. The measured fixed-camera path in `FIXED_CAMERA_CALIBRATION.md` is unchanged.
 
 ## What it does
 
@@ -33,6 +33,18 @@ A frame-by-frame homography has eight free numbers, so small landmark errors mov
 
 A steadied frame stores both mappings: `matrix` (steadied, the one used) and `frame_matrix` (its own fit). Frames that were never calibrated are untouched. The run summary records the camera position, how many frames were steadied, and the frame-to-frame wobble of one fixed image point before and after.
 
+## Heat map, distance and speed (estimates)
+
+`workers/video/pitch_motion.py` turns the per-frame positions into whole-clip figures for each kit group. They cover only the time a player was tracked in a calibrated frame, so they are not match totals.
+
+- **Heat map.** The pitch is cut into 21 x 14 cells of about 5 x 4.9 m. Each calibrated sample adds its time to the cell each placed player stood in (player-seconds). A second grid records how long each cell was inside the camera's view, so a cell that was never seen is shown as unknown, not empty.
+- **Distance and speed.** For each unbroken stretch of one track, positions are averaged over 0.5 s and distance is summed in 0.5 s hops. A hop faster than 11 m/s is treated as an error and left out (and counted). A missed sample, in tracking or in calibration, ends the stretch; nothing is bridged. The first and last quarter second of a stretch, where a full average does not fit, are not measured.
+- **Per group:** summed distance and measured player-seconds over all its tracks, mean speed (distance divided by measured time), and the fastest half-second among tracks measured for at least 2 s.
+
+Known weaknesses: a standing player still collects a little distance from noise; sharp turns inside a hop are cut short; a track is an unreviewed tracker identity, so one player can be several tracks and a track can swap players; the camera follows play, so the heat map favours wherever the camera pointed.
+
+On the 30 s test clip the group figures were about 2.1 to 2.5 m/s average and 7.3 m/s for the fastest half-second, which is in the range expected of professional players, and they changed by about 1% between the per-frame and steadied mappings. That is a plausibility check, not a validation: there is no measured reference for that clip.
+
 ## What is assumed
 
 - **Pitch size is not measured.** Touchline and goal-line landmarks assume 105 x 68 m. Markings with fixed sizes (penalty and goal areas, centre circle, penalty spots) follow the Laws of the Game. On a pitch of another size, positions near the edges shift.
@@ -52,6 +64,7 @@ Checked, on one 30 s Bundesliga broadcast clip (the model's own training domain)
 
 Not checked:
 
+- Distance, speed and heat map values against any tracking-system reference.
 - Whether steadying makes real positions more accurate. Only that it makes them steadier.
 - Steadying on a clip with replays, cuts or a moving camera.
 
