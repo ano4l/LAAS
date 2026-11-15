@@ -117,19 +117,69 @@
 .camera--shape svg { position: static; display: block; }
 .camera__message { display: grid; place-items: center; height: 100%; min-height: 140px; padding: 20px; color: var(--chalk-2); font-size: 14px; text-align: center; }
 
-.shape__ellipse { fill: color-mix(in srgb, var(--tone, var(--kit-x)) 16%, transparent); stroke: var(--tone, var(--kit-x)); stroke-width: 2; vector-effect: non-scaling-stroke; }
-.shape__player { fill: var(--tone, var(--kit-x)); stroke: var(--ink); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
-.shape__id { fill: var(--chalk); font-family: var(--font-mono); paint-order: stroke; stroke: var(--ink); stroke-width: 4px; stroke-linejoin: round; }
-.shape__centre { fill: none; stroke: var(--chalk); stroke-width: 2; vector-effect: non-scaling-stroke; }
+.shapestage {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--ink);
+}
+
+.shapestage__frame {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  opacity: 0;
+  filter: brightness(.62) saturate(.8);
+  pointer-events: none;
+  transition: opacity 160ms ease;
+}
+
+/* The frame is shown only once it is the frame of the snapshot's own moment. */
+.shapestage.is-matched .shapestage__frame { opacity: 1; }
+.shapestage__overlay { position: relative; display: block; width: 100%; height: 100%; }
+.shapestage__grid line { stroke: var(--line); stroke-width: 1; vector-effect: non-scaling-stroke; }
+
+.shapestage__status {
+  position: absolute;
+  right: 8px;
+  bottom: 6px;
+  color: var(--chalk-2);
+  font-size: 12px;
+}
+
+.shapestage__group { --tone: var(--kit-x); }
+.shapestage__group.tone-a { --tone: var(--kit-a); }
+.shapestage__group.tone-b { --tone: var(--kit-b); }
+.shapestage__hull { fill: color-mix(in srgb, var(--tone) 16%, transparent); stroke: var(--tone); stroke-width: 2.25; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.shapestage__hull-glow { fill: none; stroke: var(--tone); stroke-width: 5; opacity: .35; vector-effect: non-scaling-stroke; }
+.shapestage__ellipse { fill: none; stroke: var(--chalk); stroke-width: 1.25; stroke-dasharray: 5 5; opacity: .8; vector-effect: non-scaling-stroke; }
+.shapestage__player { transition: transform 260ms ease; }
+.shapestage__ring { fill: color-mix(in srgb, var(--tone) 30%, transparent); stroke: var(--tone); stroke-width: 2.25; vector-effect: non-scaling-stroke; }
+.shapestage__dot { fill: var(--tone); stroke: var(--ink); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.shapestage__id { fill: var(--chalk); font-family: var(--font-mono); paint-order: stroke; stroke: var(--ink); stroke-width: 4px; stroke-linejoin: round; }
+.shapestage__centre { transition: transform 260ms ease; }
+.shapestage__centre path { fill: none; stroke: var(--chalk); stroke-width: 2.25; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+.shapestage__group.is-other .shapestage__hull { fill: color-mix(in srgb, var(--tone) 8%, transparent); stroke-width: 1.5; opacity: .85; }
+.shapestage__group.is-other .shapestage__hull-glow { display: none; }
+.shapestage__group.is-other .shapestage__ring { stroke-width: 1.5; fill: color-mix(in srgb, var(--tone) 18%, transparent); }
+.shapestage-options { flex-wrap: wrap; gap: 6px 18px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .shapestage__player, .shapestage__centre, .shapestage__frame { transition: none; }
+}
 
 .shape__key { display: inline-block; width: 12px; height: 12px; }
-.shape__key--point { width: 9px; height: 9px; border-radius: 50%; background: var(--tone, var(--kit-x)); }
-.shape__key--ellipse { height: 9px; border: 1.5px solid var(--tone, var(--kit-x)); border-radius: 50%; }
+.shape__key--ring { width: 14px; height: 7px; border: 1.5px solid var(--tone, var(--kit-x)); border-radius: 50%; background: color-mix(in srgb, var(--tone, var(--kit-x)) 30%, transparent); }
+.shape__key--hull { width: 14px; height: 10px; background: var(--tone, var(--kit-x)); clip-path: polygon(0 35%, 55% 0, 100% 45%, 75% 100%, 15% 90%); opacity: .75; }
+.shape__key--ellipse { width: 14px; height: 9px; border: 1.5px dashed var(--chalk); border-radius: 50%; }
 .shape__key--centre { background: linear-gradient(var(--chalk), var(--chalk)) center / 100% 1.5px no-repeat, linear-gradient(var(--chalk), var(--chalk)) center / 1.5px 100% no-repeat; }
 
 .shapepair {
   display: grid;
-  grid-template-columns: minmax(0, 1.6fr) minmax(220px, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   align-items: start;
   gap: 20px 28px;
 }

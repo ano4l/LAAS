@@ -2,6 +2,7 @@ import { useCallback, useId, useState } from "react";
 import { num, pct, range, secs } from "./format";
 import { TeamName, useKits } from "./kits";
 import { usePlaybackValue } from "./playback";
+import { ShapeStage, type StageGroup } from "./ShapeStage";
 import { DataTable, Disclosure, EmptyState, Field, Pager, Panel, StatTile, WatchButton } from "./ui";
 
 export type ShapeEllipse = { centroid_x_pct: number; centroid_y_pct: number; major_radius_px: number; minor_radius_px: number; angle_degrees: number; area_image_pct: number; rms_spread_px: number; point_count: number };
@@ -12,13 +13,16 @@ export type CollectiveDynamics = { schema_version: string; reference: { title: s
 const FORMATION_PLAIN = "Naming a formation such as 4‑3‑3 or 4‑4‑2 needs calibrated pitch coordinates, every outfield player in view and reliable identities. This view shows the shape of the players the camera could see.";
 
 /** Collective shape of each visible kit group, measured in the camera image (after the SoccerTrack notebook). */
-export function SoccerTrackShape({ data, imageWidth, imageHeight, duration }: { data?: CollectiveDynamics; imageWidth?: number; imageHeight?: number; duration: number }) {
+export function SoccerTrackShape({ data, imageWidth, imageHeight, duration, videoSrc }: { data?: CollectiveDynamics; imageWidth?: number; imageHeight?: number; duration: number; videoSrc?: string }) {
   const id = useId();
   const kits = useKits();
   const [kitId, setKitId] = useState(data?.teams[0]?.kit ?? "");
   const [second, setSecond] = useState(0);
   const [follow, setFollow] = useState(true);
   const [activityPage, setActivityPage] = useState(0);
+  const [footage, setFootage] = useState(true);
+  const [showOther, setShowOther] = useState(true);
+  const [showIds, setShowIds] = useState(false);
   const team = data?.teams.find(group => group.kit === kitId) ?? data?.teams[0];
   const sourceDuration = data?.source_duration_seconds ?? duration;
   const seconds = Math.max(1, Math.ceil(sourceDuration));
@@ -33,6 +37,14 @@ export function SoccerTrackShape({ data, imageWidth, imageHeight, duration }: { 
   const page = Math.min(activityPage, pages - 1);
   const maxArea = Math.max(.01, ...(team?.timeline.map(window => window.mean_area_image_pct) ?? []));
   const tone = kits.tone(team?.kit);
+  // The other kit group in the same scene, drawn alongside only when its snapshot is from the very same moment.
+  const other = team ? data?.teams.find(group => group.kit !== team.kit && group.scene_id === team.scene_id) : undefined;
+  const otherSnapshot = other?.timeline.find(window => window.start_seconds <= selectedSecond && window.end_seconds > selectedSecond)?.snapshot;
+  const sameMoment = Boolean(snapshot && otherSnapshot && Math.abs(otherSnapshot.timestamp_seconds - snapshot.timestamp_seconds) < .001);
+  const stageGroups: StageGroup[] = snapshot && team ? [
+    ...(showOther && other && otherSnapshot && sameMoment ? [{ kit: other.kit, label: kits.label(other.kit), tone: kits.tone(other.kit), primary: false, players: otherSnapshot.players, ellipse: otherSnapshot.ellipse }] : []),
+    { kit: team.kit, label: kits.label(team.kit), tone, primary: true, players: snapshot.players, ellipse: snapshot.ellipse },
+  ] : [];
 
   return (
     <Panel
@@ -64,29 +76,34 @@ export function SoccerTrackShape({ data, imageWidth, imageHeight, duration }: { 
                 <span><TeamName id={team.kit} /> · scene {team.scene_id + 1} · camera frame, x right, y down</span>
                 <span className="mono">{snapshot ? `Snapshot ${secs(snapshot.timestamp_seconds, 2)}` : `${range(selectedSecond, Math.min(sourceDuration, selectedSecond + 1), 1)} · no snapshot`}</span>
               </p>
-              <div className="camera camera--shape" style={width && height ? { aspectRatio: `${width}/${height}` } : undefined}>
-                {snapshot && ellipse && width && height ? (
-                  <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="xMidYMid meet" role="img" aria-label={`Observed ${snapshot.players.length}-player shape for ${kits.label(team.kit)} at ${num(snapshot.timestamp_seconds, 2)} seconds. One-standard-deviation covariance ellipse and player footpoints in the camera image; not a pitch map.`}>
-                    <defs><clipPath id={`${id}-clip`}><rect width={width} height={height} /></clipPath></defs>
-                    <g className="camera__grid" aria-hidden="true"><line x1={width / 2} x2={width / 2} y1="0" y2={height} /><line x1="0" x2={width} y1={height / 2} y2={height / 2} /></g>
-                    <g clipPath={`url(#${id}-clip)`}>
-                      <ellipse className="shape__ellipse" cx={ellipse.centroid_x_pct * width / 100} cy={ellipse.centroid_y_pct * height / 100} rx={ellipse.major_radius_px} ry={ellipse.minor_radius_px} transform={`rotate(${ellipse.angle_degrees} ${ellipse.centroid_x_pct * width / 100} ${ellipse.centroid_y_pct * height / 100})`} />
-                      {snapshot.players.map(player => (
-                        <g key={player.track_id}>
-                          <circle className="shape__player" cx={player.x_pct * width / 100} cy={player.y_pct * height / 100} r={width * .006} />
-                          <text className="shape__id" aria-hidden="true" x={player.x_pct * width / 100 + width * .01} y={player.y_pct * height / 100 - width * .007} fontSize={width * .018}>{player.track_id}</text>
-                        </g>
-                      ))}
-                      <path className="shape__centre" d={`M${ellipse.centroid_x_pct * width / 100 - width * .01},${ellipse.centroid_y_pct * height / 100}h${width * .02}M${ellipse.centroid_x_pct * width / 100},${ellipse.centroid_y_pct * height / 100 - width * .01}v${width * .02}`} />
-                    </g>
-                  </svg>
-                ) : <p className="camera__message" role="status">{snapshot ? "Source image dimensions are unavailable. Inspect the numeric snapshot below." : "No supported group shape in this second. No positions are filled in."}</p>}
+              {snapshot && ellipse && width && height ? (
+                <ShapeStage
+                  width={width}
+                  height={height}
+                  time={snapshot.timestamp_seconds}
+                  videoSrc={videoSrc}
+                  footage={footage}
+                  showIds={showIds}
+                  groups={stageGroups}
+                  label={`Observed ${snapshot.players.length}-player shape for ${kits.label(team.kit)} at ${num(snapshot.timestamp_seconds, 2)} seconds${stageGroups.length > 1 && other && otherSnapshot ? `, with ${otherSnapshot.players.length} players of ${kits.label(other.kit)}` : ""}. Outline of the outermost players, typical-spread ellipse and player footpoints in the camera image${footage && videoSrc ? ", drawn over the video frame from that moment" : ""}; not a pitch map.`}
+                />
+              ) : (
+                <div className="camera camera--shape" style={width && height ? { aspectRatio: `${width}/${height}` } : undefined}>
+                  <p className="camera__message" role="status">{snapshot ? "Source image dimensions are unavailable. Inspect the numeric snapshot below." : "No supported group shape in this second. No positions are filled in."}</p>
+                </div>
+              )}
+              <div className="row shapestage-options">
+                {videoSrc && <label className="check"><input type="checkbox" checked={footage} onChange={event => setFootage(event.target.checked)} />Real footage behind</label>}
+                {other && <label className="check"><input type="checkbox" checked={showOther} onChange={event => setShowOther(event.target.checked)} />Show {kits.label(other.kit)} too</label>}
+                <label className="check"><input type="checkbox" checked={showIds} onChange={event => setShowIds(event.target.checked)} />Track IDs</label>
               </div>
               <ul className="keyline">
-                <li title="Technical name: observed player footpoint"><i className="shape__key shape__key--point" aria-hidden="true" />Where a player stood</li>
-                <li title="Technical name: one-standard-deviation (1σ) covariance ellipse"><i className="shape__key shape__key--ellipse" aria-hidden="true" />Typical spread of the group</li>
+                <li title="Technical name: observed player footpoint"><i className="shape__key shape__key--ring" aria-hidden="true" />Where a player stood</li>
+                <li title="Technical name: convex hull of the observed footpoints"><i className="shape__key shape__key--hull" aria-hidden="true" />Outline of the group (outermost players)</li>
+                <li title="Technical name: one-standard-deviation (1σ) covariance ellipse"><i className="shape__key shape__key--ellipse" aria-hidden="true" />Typical spread</li>
                 <li><i className="shape__key shape__key--centre" aria-hidden="true" />Centre of the group</li>
               </ul>
+              {footage && videoSrc && snapshot && <p className="note">The picture behind is the annotated video frame at {secs(snapshot.timestamp_seconds, 2)}, the same moment the positions were measured. Rings are drawn at each player's feet.</p>}
 
               <div className="scrub">
                 <Field label="Shape at this second">
@@ -103,7 +120,7 @@ export function SoccerTrackShape({ data, imageWidth, imageHeight, duration }: { 
             <div className="stack stack--sm">
               <h4>{chosen ? "This second, weighted means" : "This second: no evidence"}</h4>
               {chosen ? (
-                <dl className="deflist deflist--single">
+                <dl className="deflist">
                   <div><dt>Players in the group</dt><dd>{num(chosen.mean_visible_players, 2)}</dd></div>
                   <div><dt>Spread (characteristic area)</dt><dd>{pct(chosen.mean_area_image_pct, 2)} of image</dd></div>
                   <div><dt>Group centre</dt><dd>x {pct(chosen.centroid_x_pct)} · y {pct(chosen.centroid_y_pct)}</dd></div>
@@ -194,7 +211,8 @@ export function SoccerTrackShape({ data, imageWidth, imageHeight, duration }: { 
         </p>
         <p>Observed footpoints replace annotated box centres; missing observations remain missing. Named tactical formations are not classified by this method.</p>
         {data?.formation.reason && <p><strong>Formation status, in the analysis's wording: </strong>{data.formation.reason}</p>}
-        <p>In the diagram, the outline is a one-standard-deviation (1σ) covariance ellipse of the observed footpoints, and the cross is their mean.</p>
+        <p>In the diagram, the solid outline joins the outermost observed players (a convex hull), the dashed outline is a one-standard-deviation (1σ) covariance ellipse of the observed footpoints, and the cross is their mean. The second group is drawn only when its snapshot is from the same moment.</p>
+        <p>With footage on, the background is the annotated video frame at the snapshot's timestamp. Ring size grows towards the bottom of the image as a drawing aid; it is not a measured player size.</p>
         <p>The diagram is one actual snapshot near the middle of the second. Summary values average supported observations. Camera motion, perspective and missing players change this shape.</p>
         <p>Alignment (“moving together”) describes image motion, not proven tactical coordination. This is not a pitch map, occupied territory or square metres.</p>
         {data?.limitations.length ? <ul>{data.limitations.map((limitation, index) => <li key={index}>{limitation}</li>)}</ul> : null}
