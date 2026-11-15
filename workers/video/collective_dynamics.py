@@ -111,6 +111,7 @@ def collective_dynamics(frames,metadata,sample_fps,pitch=None):
                     record['snapshot']=dict(timestamp_seconds=round(t,4),ellipse=shape,
                         players=[dict(track_id=p['track'],x_pct=round(100*p['x']/width,4),y_pct=round(100*p['y']/height,4)) for p in players])
                     if calibration:record['snapshot']['pitch']=pitch_snapshot(calibration,players,width,height)
+    from workers.video.pitch_motion import pitch_motion
     teams=[]
     for scene,kit in sorted(supported,key=lambda g:(g[0],g[1])):
         records=[];total_area=total_players=alignment_sum=alignment_seconds=0.
@@ -140,7 +141,7 @@ def collective_dynamics(frames,metadata,sample_fps,pitch=None):
         source_duration_seconds=duration,
         formation=dict(status='unavailable',label=None,
             reason='Named tactical formation needs calibrated pitch coordinates, full outfield coverage, goalkeeper/role separation and reliable identities. This notebook supplies collective-shape methods, not a formation classifier.'),
-        pitch=pitch_status(pitch),teams=teams,parameters=dict(min_visible_tracked_players=3,min_detection_confidence=.45,window_seconds=1,
+        pitch=pitch_status(pitch),pitch_motion=pitch_motion(frames,metadata,sample_fps,pitch),teams=teams,parameters=dict(min_visible_tracked_players=3,min_detection_confidence=.45,window_seconds=1,
             covariance='sample_ddof_1',ellipse_standard_deviations=1,motion_lag_seconds=[.4,.6],min_alignment_movers=3,
             min_activity_observations=8,min_activity_observed_seconds=.5,max_activity_ellipses_per_group=80),
         limitations=['Visible scene-scoped kit subsets, not complete identified teams; goalkeeper observations are included when grouped.',

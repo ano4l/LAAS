@@ -10,9 +10,12 @@ export type ShapeEllipse = { centroid_x_pct: number; centroid_y_pct: number; maj
 /** Estimated positions on an assumed pitch, present only when that frame passed automatic calibration. */
 type PitchSnapshot = { players: { track_id: string; x_m: number; y_m: number }[]; players_not_placed: number; landmarks_used: number; fit_error_m: number; stabilised?: boolean; visible_area_m: [number, number][]; length_extent_m: number | null; width_extent_m: number | null; hull_area_m2: number | null };
 type PitchStatus = { status: string; reason?: string | null; assumed_pitch?: { length_m: number; width_m: number; measured: boolean }; frames_tried?: number; frames_calibrated?: number; frames_stabilised?: number; limitations?: string[] };
+type MotionTrack = { track_id: string; measured_seconds: number; distance_m: number; mean_speed_m_s: number; fastest_hop_m_s: number; rejected_hops: number };
+/** Whole-clip movement estimates on the assumed pitch; only time tracked in a calibrated frame counts. */
+type PitchMotion = { status: string; reason?: string | null; calibrated_seconds?: number; coverage_seconds?: number[][]; grid: { columns: number; rows: number; cell_length_m: number; cell_width_m: number }; parameters: { position_average_seconds: number; hop_seconds: number; max_speed_m_s: number; min_listed_track_seconds: number }; limitations: string[]; teams: { kit: string; scene_id: number; placed_player_seconds: number; heatmap_player_seconds: number[][]; measured_player_seconds: number; distance_m: number; mean_speed_m_s: number | null; fastest_hop_m_s: number | null; fastest_hop_track: string | null; tracks_measured: number; tracks: MotionTrack[]; tracks_listed_total: number }[] };
 type Snapshot = { timestamp_seconds: number; players: { track_id: string; x_pct: number; y_pct: number }[]; ellipse: ShapeEllipse; pitch?: PitchSnapshot };
 export type DynamicsWindow = { start_seconds: number; end_seconds: number; supported_seconds: number; observed_frames: number; mean_visible_players: number; mean_area_image_pct: number; centroid_x_pct: number; centroid_y_pct: number; motion_alignment: number | null; alignment_supported_seconds: number; snapshot: Snapshot };
-export type CollectiveDynamics = { schema_version: string; reference: { title: string; url: string; version: number }; pitch?: PitchStatus; coordinate_system: string; review_status: string; source_duration_seconds: number; formation: { status: string; label: string | null; reason: string }; teams: { kit: string; scene_id: number; supported_seconds: number; source_coverage_pct: number; mean_visible_players: number; mean_area_image_pct: number; mean_alignment: number | null; timeline: DynamicsWindow[]; activity_ellipses_total?: number; activity_ellipses: { track_id: string; observed_seconds: number; observed_frames: number; ellipse: ShapeEllipse }[] }[]; parameters: Record<string, string | number>; limitations: string[] };
+export type CollectiveDynamics = { schema_version: string; reference: { title: string; url: string; version: number }; pitch?: PitchStatus; pitch_motion?: PitchMotion; coordinate_system: string; review_status: string; source_duration_seconds: number; formation: { status: string; label: string | null; reason: string }; teams: { kit: string; scene_id: number; supported_seconds: number; source_coverage_pct: number; mean_visible_players: number; mean_area_image_pct: number; mean_alignment: number | null; timeline: DynamicsWindow[]; activity_ellipses_total?: number; activity_ellipses: { track_id: string; observed_seconds: number; observed_frames: number; ellipse: ShapeEllipse }[] }[]; parameters: Record<string, string | number>; limitations: string[] };
 
 const FORMATION_PLAIN = "Naming a formation such as 4‑3‑3 or 4‑4‑2 needs calibrated pitch coordinates, every outfield player in view and reliable identities. This view shows the shape of the players the camera could see.";
 
@@ -32,7 +35,8 @@ export function SoccerTrackShape({ data, imageWidth, imageHeight, duration, clea
   const [showOther, setShowOther] = useState(true);
   const [showIds, setShowIds] = useState(false);
   const pitchAvailable = data?.pitch?.status === "estimated";
-  const [view, setView] = useState<"pitch" | "camera">(pitchAvailable ? "pitch" : "camera");
+  const [view, setView] = useState<"pitch" | "heat" | "camera">(pitchAvailable ? "pitch" : "camera");
+  const motionData = data?.pitch_motion?.status === "estimated" ? data.pitch_motion : undefined;
   const pitchLength = data?.pitch?.assumed_pitch?.length_m ?? 105, pitchWidth = data?.pitch?.assumed_pitch?.width_m ?? 68;
   const team = data?.teams.find(group => group.kit === kitId) ?? data?.teams[0];
   const sourceDuration = data?.source_duration_seconds ?? duration;
@@ -61,6 +65,8 @@ export function SoccerTrackShape({ data, imageWidth, imageHeight, duration, clea
     ...(showOther && other && otherSnapshot?.pitch && sameMoment ? [{ kit: other.kit, label: kits.label(other.kit), tone: kits.tone(other.kit), primary: false, players: otherSnapshot.pitch.players }] : []),
     { kit: team.kit, label: kits.label(team.kit), tone, primary: true, players: pitch.players },
   ] : [];
+  const motion = motionData && team ? motionData.teams.find(group => group.kit === team.kit && group.scene_id === team.scene_id) : undefined;
+  const kmh = (speed: number) => num(speed * 3.6);
   const notPlaced = (pitch?.players_not_placed ?? 0) + (boardGroups.length > 1 ? otherSnapshot?.pitch?.players_not_placed ?? 0 : 0);
 
   return (
@@ -90,16 +96,31 @@ export function SoccerTrackShape({ data, imageWidth, imageHeight, duration, clea
           <div className="shapepair">
             <div className="stack stack--sm">
               <p className="row row--between note">
-                <span><TeamName id={team.kit} /> · scene {team.scene_id + 1} · {view === "pitch" ? "pitch seen from above, far touchline at the top" : "camera frame, x right, y down"}</span>
-                <span className="mono">{snapshot ? `Snapshot ${secs(snapshot.timestamp_seconds, 2)}` : `${range(selectedSecond, Math.min(sourceDuration, selectedSecond + 1), 1)} · no snapshot`}</span>
+                <span><TeamName id={team.kit} /> · scene {team.scene_id + 1} · {view === "camera" ? "camera frame, x right, y down" : "pitch seen from above, far touchline at the top"}</span>
+                <span className="mono">{view === "heat" ? "Whole clip" : snapshot ? `Snapshot ${secs(snapshot.timestamp_seconds, 2)}` : `${range(selectedSecond, Math.min(sourceDuration, selectedSecond + 1), 1)} · no snapshot`}</span>
               </p>
               {pitchAvailable && (
                 <div className="viewswitch" role="group" aria-label="Diagram view">
                   <button type="button" aria-pressed={view === "pitch"} onClick={() => setView("pitch")}>Pitch map <EvidenceChip level="estimated" /></button>
+                  {motionData && <button type="button" aria-pressed={view === "heat"} onClick={() => setView("heat")}>Heat map <EvidenceChip level="estimated" /></button>}
                   <button type="button" aria-pressed={view === "camera"} onClick={() => setView("camera")}>Camera view <EvidenceChip level="seen" /></button>
                 </div>
               )}
-              {view === "pitch" && pitchAvailable ? (pitch ? (
+              {view === "heat" && motionData ? (motion ? (
+                <PitchBoard
+                  length={pitchLength}
+                  width={pitchWidth}
+                  groups={[]}
+                  visibleArea={[]}
+                  showIds={false}
+                  heat={{ cells: motion.heatmap_player_seconds, coverage: motionData.coverage_seconds ?? [], tone, label: kits.label(team.kit) }}
+                  label={`Estimated heat map for ${kits.label(team.kit)} over the whole clip, seen from above: where its tracked players were, in ${motionData.grid.columns} by ${motionData.grid.rows} cells, from ${num(motion.placed_player_seconds)} player-seconds placed on an assumed ${pitchLength} by ${pitchWidth} metre pitch. Dark cells were never in the camera’s view. An unreviewed estimate.`}
+                />
+              ) : (
+                <div className="pitchboard pitchboard--empty" style={{ aspectRatio: `${pitchLength + 9}/${pitchWidth + 9}` }}>
+                  <p className="camera__message" role="status">No player of this group was placed on the pitch map, so there is no heat map for it.</p>
+                </div>
+              )) : view === "pitch" && pitchAvailable ? (pitch ? (
                 <PitchBoard
                   length={pitchLength}
                   width={pitchWidth}
@@ -129,12 +150,22 @@ export function SoccerTrackShape({ data, imageWidth, imageHeight, duration, clea
                   <p className="camera__message" role="status">{snapshot ? "Source image dimensions are unavailable. Inspect the numeric snapshot below." : "No supported group shape in this second. No positions are filled in."}</p>
                 </div>
               )}
-              <div className="row shapestage-options">
+              {view !== "heat" && <div className="row shapestage-options">
                 {videoSrc && view === "camera" && <label className="check"><input type="checkbox" checked={footage} onChange={event => setFootage(event.target.checked)} />Real footage behind</label>}
                 {other && <label className="check"><input type="checkbox" checked={showOther} onChange={event => setShowOther(event.target.checked)} />Show {kits.label(other.kit)} too</label>}
                 <label className="check"><input type="checkbox" checked={showIds} onChange={event => setShowIds(event.target.checked)} />Track IDs</label>
-              </div>
-              {view === "pitch" && pitchAvailable ? <>
+              </div>}
+              {view === "heat" && motionData ? <>
+                <ul className="keyline">
+                  <li><i className="shape__key shape__key--heat" aria-hidden="true" />Less to more time spent here</li>
+                  <li><i className="shape__key shape__key--unseen" aria-hidden="true" />Never in the camera’s view: unknown</li>
+                </ul>
+                <p className="note">
+                  <strong>Estimate, not a measurement. </strong>
+                  Each cell is about {num(motionData.grid.cell_length_m)} × {num(motionData.grid.cell_width_m)} m and adds up the time this group’s tracked players were placed in it, across the {secs(motionData.calibrated_seconds ?? 0)} of the clip that could be mapped onto the pitch.
+                  A cell with no colour was in view but no player of this group was placed there. The camera follows play, so parts of the pitch it rarely showed look emptier than they were.
+                </p>
+              </> : view === "pitch" && pitchAvailable ? <>
                 <ul className="keyline">
                   <li title="Technical name: detection foot point projected through a per-frame homography"><i className="shape__key shape__key--dot" aria-hidden="true" />Estimated player position</li>
                   <li title="Technical name: convex hull of the estimated positions"><i className="shape__key shape__key--hull" aria-hidden="true" />Outline of the group (outermost players)</li>
@@ -189,6 +220,26 @@ export function SoccerTrackShape({ data, imageWidth, imageHeight, duration, clea
                   </dl>
                 ) : <p className="note">Unknown for this second: the frame did not pass the pitch calibration checks.</p>}
               </>}
+              {motionData && <>
+                <h4 className="row">Movement on the pitch, whole clip <EvidenceChip level="estimated" /></h4>
+                {motion && motion.measured_player_seconds > 0 && motion.mean_speed_m_s != null ? (
+                  <dl className="deflist">
+                    <div><dt>Distance while tracked</dt><dd>about {num(motion.distance_m, 0)} m<small>{motion.tracks_measured} {motion.tracks_measured === 1 ? "track" : "tracks"} added together, {secs(motion.measured_player_seconds, 0)} of player time</small></dd></div>
+                    <div><dt>Average speed</dt><dd>about {num(motion.mean_speed_m_s)} m/s<small>{kmh(motion.mean_speed_m_s)} km/h, while tracked</small></dd></div>
+                    <div><dt>Fastest half-second</dt><dd>{motion.fastest_hop_m_s == null ? "Unknown" : <>about {num(motion.fastest_hop_m_s)} m/s<small>{kmh(motion.fastest_hop_m_s)} km/h · track {motion.fastest_hop_track}</small></>}</dd></div>
+                  </dl>
+                ) : <p className="note">Unknown: no track of this group stayed on the pitch map long enough to measure.</p>}
+                <p className="note">Not match totals. Only time a player was tracked in a mapped frame counts, and a track is not a verified player.</p>
+              </>}
+              {motion && motion.tracks.length > 0 && (
+                <Disclosure summary="Movement by track" meta={`${motion.tracks_listed_total} tracks`}>
+                  <DataTable label="Estimated movement of each track on the assumed pitch">
+                    <thead><tr><th scope="col">Track</th><th scope="col" className="num">Measured</th><th scope="col" className="num">Distance · m</th><th scope="col" className="num">Average · m/s</th><th scope="col" className="num">Fastest ½ s · m/s</th></tr></thead>
+                    <tbody>{motion.tracks.map(row => <tr key={row.track_id}><th scope="row" className="mono">{row.track_id}</th><td className="num">{secs(row.measured_seconds)}</td><td className="num">{num(row.distance_m)}</td><td className="num">{num(row.mean_speed_m_s)}</td><td className="num">{num(row.fastest_hop_m_s)}</td></tr>)}</tbody>
+                  </DataTable>
+                  <p>Tracks measured for at least {motionData?.parameters.min_listed_track_seconds} s{motion.tracks_listed_total > motion.tracks.length ? `; the ${motion.tracks.length} longest are shown` : ""}. Estimates on an assumed {pitchLength} × {pitchWidth} m pitch.</p>
+                </Disclosure>
+              )}
               {ellipse && (
                 <Disclosure summary="Exact snapshot measurements">
                   <dl className="deflist deflist--single">
@@ -290,6 +341,10 @@ export function SoccerTrackShape({ data, imageWidth, imageHeight, duration, clea
           <p><strong>Pitch map. </strong>A model marks known pitch markings in a frame, and the frame is mapped onto the pitch from them. {data.pitch.frames_calibrated} of {data.pitch.frames_tried} tried frames passed the checks, and a frame that fails has no pitch positions. {data.pitch.frames_stabilised ? `${data.pitch.frames_stabilised} of those were then steadied: the camera is taken to stand in one place for the whole clip, and its turn and zoom are smoothed over about half a second. The rest keep their own frame-by-frame mapping.` : "Each frame is mapped on its own."} When several frames in a second qualify, the snapshot is the calibrated frame nearest the middle of the second.</p>
           {data.pitch.limitations?.length ? <ul>{data.pitch.limitations.map((limitation, index) => <li key={index}>{limitation}</li>)}</ul> : null}
         </> : <p><strong>Pitch map unavailable. </strong>{data.pitch.reason}</p>)}
+        {motionData && <>
+          <p><strong>Heat map, distance and speed. </strong>Each tracked player’s feet are placed on the pitch in every mapped frame. Positions are averaged over {motionData.parameters.position_average_seconds} s and distance is added up in {motionData.parameters.hop_seconds} s steps, so box jitter is not counted as running. A step faster than {motionData.parameters.max_speed_m_s} m/s is treated as an error and left out. A gap in tracking or mapping ends the stretch; nothing is filled in across it.</p>
+          <ul>{motionData.limitations.map((limitation, index) => <li key={index}>{limitation}</li>)}</ul>
+        </>}
         {data?.limitations.length ? <ul>{data.limitations.map((limitation, index) => <li key={index}>{limitation}</li>)}</ul> : null}
       </Disclosure>
     </Panel>

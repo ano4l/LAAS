@@ -502,6 +502,12 @@
 /* Where the camera was not looking: dimmed, because nothing is known there. */
 .pitchboard__unseen { fill: rgba(6, 9, 8, .68); }
 .pitchboard__seen { fill: none; stroke: rgba(238, 242, 234, .5); stroke-width: 1; stroke-dasharray: 4 4; vector-effect: non-scaling-stroke; }
+.pitchboard__heat { --tone: var(--kit-x); }
+.pitchboard__heat.tone-a { --tone: var(--kit-a); }
+.pitchboard__heat.tone-b { --tone: var(--kit-b); }
+.pitchboard__cell { fill: var(--tone); }
+.pitchboard__cell--unseen { fill: rgba(6, 9, 8, .68); }
+.shape__key--heat { width: 34px; height: 10px; border-radius: 2px; background: linear-gradient(90deg, color-mix(in srgb, var(--tone, var(--kit-x)) 12%, transparent), var(--tone, var(--kit-x))); }
 .pitchboard__group { --tone: var(--kit-x); }
 .pitchboard__group.tone-a { --tone: var(--kit-a); }
 .pitchboard__group.tone-b { --tone: var(--kit-b); }
