@@ -542,3 +542,21 @@
 @media (prefers-reduced-motion: reduce) {
   .pitchboard__player { transition: none; }
 }
+
+/* ---------- Player profile ---------- */
+.profile__head { display: grid; gap: 4px; }
+.profile__name { margin: 0; font-size: 22px; font-weight: 600; letter-spacing: -0.01em; }
+.profile__head .note { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin: 0; }
+.profile__map { display: grid; gap: 8px; max-width: 620px; }
+.profile__form { min-width: 0; margin: 0; padding: 0; border: 0; }
+.profile__timeline { position: relative; height: 22px; border: 1px solid var(--line, rgba(238, 242, 234, .14)); border-radius: 6px; background: rgba(238, 242, 234, .04); overflow: hidden; }
+.profile__timeline i { position: absolute; display: block; }
+.profile__span { top: 0; bottom: 0; background: rgba(238, 242, 234, .3); }
+.profile__spell { top: 5px; bottom: 5px; border-radius: 2px; background: var(--flood); }
+.profile__key { display: flex; flex-wrap: wrap; gap: 4px 16px; align-items: center; margin: 0; }
+.profile__key span { display: inline-flex; align-items: center; gap: 6px; }
+.profile__key i { position: static; display: inline-block; width: 14px; height: 10px; border-radius: 2px; }
+.profile__key .mono { margin-left: auto; }
+.profile__bands { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.profile__bands li { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(60px, 1fr) auto; align-items: center; gap: 12px; font-size: 14px; }
+@media (max-width: 560px) { .profile__bands li { grid-template-columns: minmax(0, 1fr) auto; } .profile__bands li .bar { grid-column: 1 / -1; grid-row: 2; } }

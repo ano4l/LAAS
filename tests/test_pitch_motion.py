@@ -45,6 +45,30 @@ def test_a_steady_run_is_measured_and_a_standing_player_barely_moves():
     assert runner["measured_player_seconds"] < 8  # the ends of a stretch, where a full average does not fit, are not measured
     assert stander["mean_speed_m_s"] < .35
     assert np.sum(runner["heatmap_player_seconds"]) == pytest.approx(8.) == runner["placed_player_seconds"]
+    # One track in the group, so its own cells add up to the group's map, cell by cell.
+    track = next(row for row in out["players"] if row["track_id"] == "runner")
+    assert track["placed_seconds"] == pytest.approx(8.) and track["kit"] == "kit-A"
+    assert track["distance_m"] == runner["tracks"][0]["distance_m"] and "speed_band_seconds" not in runner["tracks"][0]
+    # A steady 4 m/s with noise sits around the jogging/running boundary and never in walking; the bands add up to the measured time.
+    bands = track["speed_band_seconds"]
+    assert sum(bands.values()) == pytest.approx(track["measured_seconds"], abs=.05) and bands["walking"] == 0 and bands["fast_running"] == 0
+    still = next(row for row in out["players"] if row["track_id"] == "stander")["speed_band_seconds"]
+    assert still["walking"] == pytest.approx(sum(still.values()))
+    grid = np.zeros((14, 21))
+    for row, column, seconds in track["heat_cells"]:
+        grid[row, column] = seconds
+    assert np.allclose(grid, runner["heatmap_player_seconds"], atol=.02)
+
+
+def test_a_player_without_a_kit_group_is_still_measured_alone_but_not_in_any_group():
+    frames = clip()
+    for frame in frames:
+        frame["players"].append(player("loner", 50, 20 + 2 * frame["time"], kit=None))
+    out = pitch_motion(frames, META, FPS, {i: record() for i in range(len(frames))})
+    loner = next(row for row in out["players"] if row["track_id"] == "loner")
+    assert loner["kit"] is None and loner["mean_speed_m_s"] == pytest.approx(2., abs=.05) and loner["placed_seconds"] == pytest.approx(8.)
+    assert [team["kit"] for team in out["teams"]] == ["kit-A", "kit-B"] and out["players_listed_total"] == 3
+    assert all("loner" not in [row["track_id"] for row in team["tracks"]] for team in out["teams"])
 
 
 def test_uncalibrated_frames_and_missed_samples_are_not_bridged():

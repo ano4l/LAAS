@@ -149,7 +149,7 @@ function ClipWorkspace({ result, active, openRequest, api, authHeaders, onRefres
             <TabPanel id="possession" idBase="clip" active={tab === "possession"}><PossessionTab {...tabProps} api={api} authHeaders={authHeaders} onRefreshResult={onRefreshResult} /></TabPanel>
             <TabPanel id="ball" idBase="clip" active={tab === "ball"}><BallTab {...tabProps} /></TabPanel>
             <TabPanel id="shape" idBase="clip" active={tab === "shape"}><ShapeTab {...tabProps} media={media} /></TabPanel>
-            <TabPanel id="players" idBase="clip" active={tab === "players"}><PlayersTab {...tabProps} /></TabPanel>
+            <TabPanel id="players" idBase="clip" active={tab === "players"}><PlayersTab {...tabProps} api={api} authHeaders={authHeaders} /></TabPanel>
             {/* Review stays mounted from the start: it loads the saved review that Summary and the timeline read. */}
             <TabPanel id="review" idBase="clip" active={tab === "review"}>
               <ReviewTab {...tabProps} api={api} authHeaders={authHeaders} reviewUnsaved={reviewUnsaved} onSaved={setSavedReview} onUnsaved={setReviewUnsaved} />

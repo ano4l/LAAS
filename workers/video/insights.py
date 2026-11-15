@@ -7,7 +7,7 @@ from collections import Counter, defaultdict
 from itertools import groupby
 import math
 
-VERSION = "video-insights-5"
+VERSION = "video-insights-8"
 PLAYERS = {"player", "goalkeeper", "person"}
 BALLS = {"ball", "sports ball"}
 

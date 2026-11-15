@@ -247,6 +247,38 @@ def create_gateway(volume, analyze, access_key, root=Path("/jobs"), call_lookup=
             volume.commit()
             return state
 
+    @app.get('/runs/{run_id}/players',dependencies=[Depends(authorized)])
+    def get_player_labels(run_id:str):
+        from workers.video.player_labels import load_labels
+        with review_lock:
+            path,manifest=review_location(run_id)
+            try:return load_labels(path.with_name('player-labels.json'),manifest)
+            except ValueError as exc:raise HTTPException(422,str(exc)) from exc
+
+    @app.get('/roster',dependencies=[Depends(authorized)])
+    def get_roster():
+        from workers.video.player_labels import roster
+        volume.reload()
+        return dict(players=roster(root.glob('requests/*/outputs/*/player-labels.json')))
+
+    @app.get('/runs/{run_id}/players/suggestions',dependencies=[Depends(authorized)])
+    def get_merge_suggestions(run_id:str):
+        from workers.video.merge_suggestions import suggest_for_run
+        path,manifest=review_location(run_id)
+        return suggest_for_run(path.parent,manifest)
+
+    @app.post('/runs/{run_id}/players',dependencies=[Depends(authorized)])
+    def put_player_labels(run_id:str,payload:dict):
+        from workers.video.player_labels import save_labels
+        from workers.video.event_review import ReviewConflict
+        with review_lock:
+            path,manifest=review_location(run_id)
+            try:state=save_labels(path.with_name('player-labels.json'),manifest,payload,path.with_name('tracking.json'))
+            except ReviewConflict as exc:raise HTTPException(409,str(exc)) from exc
+            except ValueError as exc:raise HTTPException(422,str(exc)) from exc
+            volume.commit()
+            return state
+
     @app.post('/runs/{run_id}/review',dependencies=[Depends(authorized)])
     def put_review(run_id:str,payload:dict):
         from workers.video.event_review import save_review,ReviewConflict
