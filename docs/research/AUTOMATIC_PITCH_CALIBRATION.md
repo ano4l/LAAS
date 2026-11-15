@@ -21,17 +21,20 @@ Results are written to `pitch-calibration.json` in the run directory, with the p
 
 Player foot points (bottom centre of the detection box) are projected through the frame's own mapping. A player who lands more than 3 m outside the pitch outline is counted as not placed and is not drawn.
 
-## Steadying: one camera for the clip
+## Steadying: smoothing over time
 
-A frame-by-frame homography has eight free numbers, so small landmark errors move the whole map between frames. A broadcast camera stands in one place and only turns and zooms. `workers/video/pitch_camera.py`:
+A frame-by-frame homography follows the small errors of that frame's landmarks, so the whole map wobbles between frames, while the camera itself moves smoothly. `workers/video/pitch_camera.py`:
 
-1. Reads a camera position and focal length out of each calibrated frame's own fit (pinhole camera, square pixels, principal point at the image centre).
-2. Takes the median position as the clip's camera. If fewer than 8 frames give a position, or the positions scatter by more than 20% of the camera's distance to the pitch centre (for example a clip that mixes cameras), nothing is steadied and every frame keeps its own fit.
-3. Refits each frame with the position fixed: rotation and zoom only, four numbers instead of eight.
-4. Smooths rotation and zoom with a local straight-line fit over about half a second (Gaussian weights, sigma 0.15 s, window 0.45 s either side). Smoothing never crosses a gap longer than 0.5 s between calibrated frames, a turn of more than 4 degrees or a zoom change of more than 15% between neighbouring samples.
-5. Keeps the steadied mapping for a frame only if it still matches that frame's landmarks to 1.0 m on average and 2.5 m at worst. Otherwise the frame keeps its own fit and is marked `stabilised: false`.
+1. Follows where four fixed image points land on the pitch through each unbroken stretch of calibrated frames. A stretch ends at a gap longer than 0.5 s between calibrated frames, or where those points jump by more than 5 m between neighbouring samples and faster than 60 m/s (a cut).
+2. Around each frame, fits a straight line through each point's path over about half a second (Gaussian weights, sigma 0.15 s, window 0.45 s either side, at least 5 calibrated frames) and reads it at that frame's time.
+3. Rebuilds the frame's mapping from the four smoothed points.
+4. Keeps the smoothed mapping only if it passes the same landmark checks a frame's own fit must pass (0.6 m mean, 1.5 m worst). Otherwise the frame keeps its own fit and is marked `stabilised: false`.
 
-A steadied frame stores both mappings: `matrix` (steadied, the one used) and `frame_matrix` (its own fit). Frames that were never calibrated are untouched. The run summary records the camera position, how many frames were steadied, and the frame-to-frame wobble of one fixed image point before and after.
+A steadied frame stores both mappings: `matrix` (smoothed, the one used) and `frame_matrix` (its own fit). Frames that were never calibrated are untouched: nothing is carried into them. The run summary records how many frames were steadied, their landmark agreement, and the frame-to-frame wobble of one fixed image point before and after. A calibration stored by an older version is steadied again from its stored frames the next time the run is opened; no model is needed.
+
+### An approach that was tried and dropped
+
+The first version fixed one camera position for the whole clip (the median of the positions implied by each frame's fit) and refitted rotation and zoom only. Fitted to each frame's own mapping it looked good. Checked against stored landmarks on three real clips it did not: the fixed-position mapping missed the landmarks by 0.7 to 1.3 m on average, against 0.2 to 0.3 m for a frame's own fit, so most frames failed the check and kept their own fit, and the mix made wobble worse on one clip. Refining the position by search, adding a shared lens-distortion term and freeing the principal point brought the error on the best clip from 17 px to about 5 px, still several times a free fit. The cause was not established; candidates are systematic landmark-model error, landmark definitions, and pitch size.
 
 ## Heat map, distance and speed (estimates)
 
@@ -43,14 +46,14 @@ A steadied frame stores both mappings: `matrix` (steadied, the one used) and `fr
 
 Known weaknesses: a standing player still collects a little distance from noise; sharp turns inside a hop are cut short; a track is an unreviewed tracker identity, so one player can be several tracks and a track can swap players; the camera follows play, so the heat map favours wherever the camera pointed.
 
-On the 30 s test clip the group figures were about 2.1 to 2.5 m/s average and 7.3 m/s for the fastest half-second, which is in the range expected of professional players, and they changed by about 1% between the per-frame and steadied mappings. That is a plausibility check, not a validation: there is no measured reference for that clip.
+On the 30 s test clip the group figures were about 2.1 to 2.5 m/s average and 7.3 m/s for the fastest half-second, which is in the range expected of professional players, and they changed by about 2% between the per-frame and steadied mappings. That is a plausibility check, not a validation: there is no measured reference for that clip.
 
 ## What is assumed
 
 - **Pitch size is not measured.** Touchline and goal-line landmarks assume 105 x 68 m. Markings with fixed sizes (penalty and goal areas, centre circle, penalty spots) follow the Laws of the Game. On a pitch of another size, positions near the edges shift.
 - **Landmarks 11, 12, 19 and 20** are taken to be where the penalty arc meets the penalty-area line. This was read off the model's output on test frames, not from documentation.
 - **No lens distortion model.** A homography cannot correct a wide-angle lens.
-- **Steadying assumes one fixed camera position per clip**, turning and zooming only, with no roll change being special-cased (roll is fitted freely and smoothed).
+- **Steadying assumes the view changes smoothly** over about half a second. A whip pan or a hard zoom is left to each frame's own fit when the smoothed mapping fails the landmark checks.
 
 ## What has and has not been checked
 
@@ -59,8 +62,16 @@ Checked, on one 30 s Bundesliga broadcast clip (the model's own training domain)
 - 11 frames spread through the clip all calibrated, using 6 to 15 landmarks, with mean landmark error of 0.17 to 0.40 m.
 - Drawn back onto the frames, the fitted lines follow the real markings near the landmarks. Away from them (near touchline, far end of the halfway line) the fitted lines were off by roughly 1 to 2 m by eye.
 
-- Steadying, on the same clip's 188 stored calibrations (landmark positions were not stored for that run, so it was fitted to each frame's own mapping): one camera was found, on the halfway line about 38 m behind the near touchline and 17 m above the pitch, with a position scatter of 4%. All 188 frames were steadied. The wobble of a fixed image point fell from 0.22 m to 0.06 m per frame step. The steadied mapping moved positions by 0.64 m on average (1.2 m in the worst frame) from the frame's own fit. Drawn on three frames, the two sets of lines were equally close to the real markings by eye; neither was clearly better.
-- On synthetic cameras with landmark noise, steadying halved both the wobble and the position error near the touchline. Synthetic data shares the method's assumptions, so this shows the code is right, not that real positions are.
+- Steadying, against stored landmarks on three clips from the hosted library:
+
+  | Clip | Calibrated frames | Steadied | Landmark error, own fit to steadied | Wobble per frame step, before to after |
+  | --- | --- | --- | --- | --- |
+  | 30 s, 1920 x 1080, 25 fps (Bundesliga) | 739 | 718 | 0.29 to 0.32 m | 0.13 to 0.03 m |
+  | 1920 x 1080, 30 fps | 464 | 366 | 0.20 to 0.32 m | 0.66 to 0.47 m |
+  | 848 x 480, 24 fps | 486 | 297 | 0.20 to 0.35 m | 0.96 to 0.80 m |
+
+  The last two clips break into many short stretches (8 and 27), so many frames have too few calibrated neighbours and the wobble that remains is mostly at those breaks.
+- On synthetic cameras with landmark noise, steadying more than halved the wobble and cut the position error near the touchline by over 30%. Synthetic data shares the method's assumptions, so this shows the code is right, not that real positions are.
 
 Not checked:
 

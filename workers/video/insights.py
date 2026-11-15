@@ -279,7 +279,20 @@ def ensure_insights(manifest, directory):
     from workers.video.sequence_context import load_context
     context=load_context(directory/'sequence-context.json',manifest)
     current=manifest.get('metrics',{}).get('video_insights') or {}
-    if manifest.get("engine") != "yolo_bytetrack" or (current.get("schema_version") == VERSION and current.get('sequences',{}).get('context_revision',0)==context['revision']):
+    if manifest.get("engine") != "yolo_bytetrack":
+        return False
+    # A calibration stored by an older version has its steadying step redone from its stored frames; no model is needed.
+    from workers.video import pitch_keypoints as pk
+    stored = (manifest.get("detection_summary") or {}).get("pitch_calibration") or {}
+    upgraded = False
+    if (stored.get("schema_version") not in (None, pk.VERSION) and (directory/"pitch-calibration.json").is_file()
+            and {"width", "height", "fps"} <= manifest.get("metadata", {}).keys()):
+        calibration = json.loads((directory/"pitch-calibration.json").read_text(encoding="utf-8"))
+        if pk.upgrade(calibration, tuple(manifest["metadata"][key] for key in ("width", "height", "fps"))):
+            pk._write_json(directory/"pitch-calibration.json", calibration)
+            manifest["detection_summary"]["pitch_calibration"] = {key: calibration[key] for key in pk.SUMMARY_KEYS}
+            upgraded = True
+    if not upgraded and current.get("schema_version") == VERSION and current.get('sequences',{}).get('context_revision',0)==context['revision']:
         return False
     # Legacy/incomplete artifacts remain readable. Never synthesize analytics
     # from the small preview or assume absent full-tracking observations.

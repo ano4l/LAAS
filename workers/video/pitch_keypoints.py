@@ -3,9 +3,9 @@
 A keypoint model marks known pitch landmarks (line junctions, penalty spots, circle
 points) in a frame. A homography fitted to them maps image foot points onto the pitch
 plane. Each frame is calibrated on its own, and a frame that fails a check has no
-pitch positions at all: nothing is carried into it or interpolated. Where the calibrated
-frames agree on one camera position, pitch_camera.py then steadies them (fixed position,
-turn and zoom smoothed over about half a second); a frame that step cannot explain keeps
+pitch positions at all: nothing is carried into it or interpolated. pitch_camera.py then
+steadies calibrated frames that have calibrated neighbours, by smoothing the mapping over
+about half a second; a frame whose smoothed mapping would fail its landmark checks keeps
 its own fit.
 
 The pitch size is not measured. Markings with fixed dimensions (penalty and goal areas,
@@ -20,7 +20,7 @@ import math
 import cv2
 import numpy as np
 
-VERSION = "pitch-keypoints-2"
+VERSION = "pitch-keypoints-3"
 LENGTH_M, WIDTH_M = 105., 68.  # assumed, not measured
 MIN_CONFIDENCE = .5
 MIN_LANDMARKS = 5  # four fit exactly, so a fifth is the first that can disagree
@@ -31,7 +31,7 @@ MAX_ERROR_M = 1.5
 MIN_IMAGE_AREA = .015  # landmark hull as a share of the image
 MIN_SPAN_M = 9.  # landmarks must spread along both pitch axes
 MARGIN_M = 3.  # foot points this far outside the pitch outline are still drawn
-LIMITATIONS = ["Each frame is calibrated from landmarks a model found. Where the frames agree on one camera position, the mapping is refitted with that position fixed and its turn and zoom are smoothed over about half a second; otherwise each frame stands alone. A frame without a calibration gets no positions: nothing is carried into it or interpolated.",
+LIMITATIONS = ["Each frame is calibrated from landmarks a model found. A calibrated frame with calibrated neighbours has its mapping smoothed over about half a second, and keeps the smoothed mapping only if it still passes the landmark checks; otherwise it keeps its own. A frame without a calibration gets no positions: nothing is carried into it or interpolated.",
                "The pitch is assumed to be 105 x 68 m. Fixed markings follow the Laws of the Game; a different pitch size shifts positions near the touchlines and goal lines.",
                "Fit error measures agreement among the landmarks used, not the accuracy of player positions. It has not been checked against measured positions.",
                "Foot points are the bottom centre of a detection box; occlusion, jumps and lens distortion move them. Positions far from any landmark are less certain."]
@@ -179,7 +179,7 @@ def document(frames, model_name, model_sha256=None, stride=1, video=None):
     """The per-run calibration artifact. `frames`: {frame_idx: record}.
 
     With `video` = (width, height, fps), the calibrated records are first steadied in
-    place with one camera for the clip (see pitch_camera.py).
+    place by smoothing over time (see pitch_camera.py).
     """
     camera = None
     if video:
@@ -200,7 +200,7 @@ def document(frames, model_name, model_sha256=None, stride=1, video=None):
             # Count "Only 3 ..." and "Only 4 ..." together.
             reason = ("Too few landmarks agree with one pitch fit" if "agree" in record["reason"] else "Too few pitch landmarks") if record["reason"].startswith("Only") else record["reason"]
             reasons[reason] = reasons.get(reason, 0) + 1
-    return dict(schema_version=VERSION, method="landmark_homography_with_clip_camera" if camera and camera["frames_stabilised"] else "per_frame_landmark_homography", review_status="unreviewed", accuracy_evaluated=False,
+    return dict(schema_version=VERSION, method="landmark_homography_smoothed" if camera and camera["frames_stabilised"] else "per_frame_landmark_homography", review_status="unreviewed", accuracy_evaluated=False,
                 model=model_name, model_sha256=model_sha256, frame_stride=stride,
                 assumed_pitch=dict(length_m=LENGTH_M, width_m=WIDTH_M, measured=False),
                 parameters=dict(min_landmark_confidence=MIN_CONFIDENCE, min_landmarks=MIN_LANDMARKS, ransac_threshold_m=RANSAC_M, min_landmark_agreement=MIN_AGREEMENT,
@@ -208,11 +208,27 @@ def document(frames, model_name, model_sha256=None, stride=1, video=None):
                                 min_landmark_span_m=MIN_SPAN_M, outside_pitch_margin_m=MARGIN_M),
                 summary=dict(frames_tried=len(frames), frames_calibrated=len(calibrated),
                              mean_error_m=round(float(np.mean([r["mean_error_m"] for r in calibrated])), 3) if calibrated else None,
-                             rejected=reasons, camera=camera),
+                             rejected=reasons, steadying=camera),
                 limitations=LIMITATIONS,
                 frames={str(index): record for index, record in sorted(frames.items())})
 
 
+def upgrade(doc, video):
+    """Bring a stored calibration document up to this version by redoing the steadying step on its stored frames.
+
+    No model is needed: the per-frame fits and their landmarks are already in the document.
+    Returns whether the document changed.
+    """
+    if doc.get("schema_version") == VERSION or "frames" not in doc:
+        return False
+    frames = {int(index): record for index, record in doc["frames"].items()}
+    new = document(frames, doc.get("model"), doc.get("model_sha256"), doc.get("frame_stride", 1), video)
+    doc.clear()
+    doc.update(new)
+    return True
+
+
+SUMMARY_KEYS = ("schema_version", "method", "model", "model_sha256", "frame_stride", "assumed_pitch", "summary")
 CALIBRATION_WARNING = ("Pitch positions in the shape view are estimates from automatic per-frame calibration that assumes a 105 x 68 m pitch. "
                        "They are unreviewed, not checked against measured positions, and absent for frames that fail the calibration checks.")
 
@@ -272,7 +288,7 @@ def calibrate_run(video, run_directory, weights, device="cpu", stride=1, progres
         calibration = document(frames, weights.name, hashlib.file_digest(stream, "sha256").hexdigest(), frame_stride * stride,
                                (metadata["width"], metadata["height"], metadata["fps"]))
     _write_json(run_directory / "pitch-calibration.json", calibration)
-    summary["pitch_calibration"] = {key: calibration[key] for key in ("schema_version", "method", "model", "model_sha256", "frame_stride", "assumed_pitch", "summary")}
+    summary["pitch_calibration"] = {key: calibration[key] for key in SUMMARY_KEYS}
     if CALIBRATION_WARNING not in manifest.setdefault("warnings", []):
         manifest["warnings"].append(CALIBRATION_WARNING)
     context = load_context(run_directory / "sequence-context.json", manifest)
