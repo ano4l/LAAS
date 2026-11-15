@@ -4,7 +4,7 @@ import { ImageOccupancy } from "../VideoMeasurements";
 import type { ClipTabProps } from "../Workspace";
 import { Disclosure, EmptyState } from "../ui";
 
-export function ShapeTab({ result }: ClipTabProps) {
+export function ShapeTab({ result, media }: ClipTabProps & { media: (path: string) => string }) {
   const insights = result.metrics.video_insights;
   const m = result.metrics.video_measurements;
 
@@ -18,7 +18,7 @@ export function ShapeTab({ result }: ClipTabProps) {
       </header>
 
       {insights ? <>
-        <SoccerTrackShape data={insights.collective_dynamics} imageWidth={insights.source_video?.width} imageHeight={insights.source_video?.height} duration={insights.source_duration_seconds} />
+        <SoccerTrackShape data={insights.collective_dynamics} imageWidth={insights.source_video?.width} imageHeight={insights.source_video?.height} duration={insights.source_duration_seconds} videoSrc={result.files.annotated_video ? media(result.files.annotated_video) : undefined} />
         <KitEvolution data={insights} />
       </> : <EmptyState title="No shape measurements for this clip">Extended video insights are not available in this run. No player positions or formation are assumed.</EmptyState>}
 
