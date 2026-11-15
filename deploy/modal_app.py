@@ -75,3 +75,57 @@ def analyze(request_id: str, profile: str = "accurate", tile_size: int = 0):
             hashes[name] = hashlib.file_digest(stream, "sha256").hexdigest()
     volume.commit()
     return dict(run_id=result["run_id"], sha256=hashes)
+
+
+@app.function(image=image, gpu="L4", cpu=2, memory=8192, volumes={"/jobs": volume},
+              min_containers=0, max_containers=1, scaledown_window=2, timeout=1800,
+              startup_timeout=180, retries=0)
+def backfill_pitch(request_ids: str = "", force: bool = False):
+    """Add pitch calibration to finished runs without re-tracking them.
+
+    Operator-only: it has no web route and is called from a trusted machine,
+    `modal run deploy/modal_app.py::backfill_pitch`. `request_ids` is a
+    comma-separated list; empty means every job. It does not count against
+    the analysis attempt ledger, and runs that already have calibration are
+    skipped unless `force` is set. Returns one outcome per job.
+    """
+    import json
+    from workers.video.modal_policy import validate_request
+    from workers.video.pitch_keypoints import calibrate_run
+    from workers.video.yolo_adapter import pitch_model_path
+
+    weights = pitch_model_path(Path("/app"))
+    if weights is None or not weights.is_file():
+        raise RuntimeError("This image was deployed without the pitch landmark model")
+    volume.reload()
+    jobs = Path("/jobs/web-jobs")
+    outcomes = {}
+    for request_id in [value.strip() for value in request_ids.split(",") if value.strip()] or sorted(path.stem for path in jobs.glob("*.json")):
+        validate_request(request_id)
+        job_path = jobs / f"{request_id}.json"
+        try:
+            job = json.loads(job_path.read_text(encoding="utf-8"))
+            if job.get("status") != "complete" or not job.get("run_id") or (job.get("result") or {}).get("engine") != "yolo_bytetrack":
+                outcomes[request_id] = "skipped: no finished real run"
+                continue
+            source = Path("/jobs/requests") / request_id / "source.mp4"
+            run_dir = source.parent / "outputs" / job["run_id"]
+            if not source.is_file() or not (run_dir / "tracking.json").is_file():
+                outcomes[request_id] = "skipped: source video or tracking is not stored"
+                continue
+            if (run_dir / "pitch-calibration.json").is_file() and not force:
+                outcomes[request_id] = "skipped: already calibrated"
+                continue
+            manifest = calibrate_run(source, run_dir, weights, "0")
+            volume.commit()
+            # Re-read the job: the web gateway may have saved it while this ran.
+            volume.reload()
+            job = json.loads(job_path.read_text(encoding="utf-8"))
+            job["result"] = manifest
+            job_path.write_text(json.dumps(job), encoding="utf-8")
+            volume.commit()
+            outcomes[request_id] = manifest["detection_summary"]["pitch_calibration"]["summary"]
+        except Exception as error:  # one bad run must not stop the rest
+            outcomes[request_id] = f"failed: {type(error).__name__}: {error}"
+        print(request_id[:8], outcomes[request_id], flush=True)
+    return outcomes

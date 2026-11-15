@@ -193,7 +193,8 @@ def run_real_analysis(input_video: Path, output_root: Path, progress=None) -> di
         if pitch_model:
             from workers.video.pitch_keypoints import document
             with pitch_weights.open("rb") as weights:
-                pitch_document = document(pitch_frames, pitch_weights.name, hashlib.file_digest(weights, "sha256").hexdigest(), stride * pitch_stride)
+                pitch_document = document(pitch_frames, pitch_weights.name, hashlib.file_digest(weights, "sha256").hexdigest(), stride * pitch_stride,
+                                          (metadata["width"], metadata["height"], metadata["fps"]))
             (out_dir / "pitch-calibration.json").write_text(json.dumps(pitch_document), encoding="utf-8")
         warnings = ["Detections and track IDs are unreviewed model predictions, not verified player identities.",
                     "Jersey groups are anonymous colour estimates, not verified teams. Passes, tackles, shots, goals, possession and xG are not verified.",

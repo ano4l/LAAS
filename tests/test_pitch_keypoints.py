@@ -91,3 +91,47 @@ def test_shape_snapshot_gets_pitch_positions_only_from_a_calibrated_frame():
     assert plain["teams"][0]["timeline"][0]["snapshot"]["timestamp_seconds"] == .5
     none_passed = collective_dynamics(frames, meta, 10, {5: bad})
     assert none_passed["pitch"]["status"] == "unavailable" and "pitch" not in none_passed["teams"][0]["timeline"][0]["snapshot"]
+
+
+def test_calibrate_run_adds_calibration_to_an_existing_run_or_writes_nothing(tmp_path, monkeypatch):
+    import cv2
+    import hashlib
+    import json
+
+    video = tmp_path / "source.avi"
+    writer = cv2.VideoWriter(str(video), cv2.VideoWriter_fourcc(*"MJPG"), 10, (320, 180))
+    for _ in range(6):
+        writer.write(np.zeros((180, 320, 3), np.uint8))
+    writer.release()
+    weights = tmp_path / "pitch.pt"
+    weights.write_bytes(b"weights")
+    run = tmp_path / "run"
+    run.mkdir()
+    manifest = dict(engine="yolo_bytetrack", warnings=[], metrics={},
+                    metadata=dict(width=320, height=180, fps=10., duration_seconds=.6, sha256=hashlib.sha256(video.read_bytes()).hexdigest()),
+                    detection_summary=dict(sample_fps=5., decoded_frames=6))
+    (run / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    (run / "tracking.json").write_text("[]", encoding="utf-8")
+
+    class Model:
+        def __init__(self, weights, device):
+            pass
+
+        def calibrate(self, frame):
+            return dict(status="invalid", reason="No pitch found in the frame", landmarks_seen=0)
+
+    monkeypatch.setattr(pk, "PitchKeypointModel", Model)
+    result = pk.calibrate_run(video, run, weights)
+    saved = json.loads((run / "pitch-calibration.json").read_text(encoding="utf-8"))
+    assert sorted(saved["frames"]) == ["0", "2", "4"] and saved["summary"]["frames_calibrated"] == 0
+    assert result["detection_summary"]["pitch_calibration"]["summary"]["frames_tried"] == 3
+    assert result["warnings"] == [pk.CALIBRATION_WARNING]
+    assert json.loads((run / "manifest.json").read_text(encoding="utf-8")) == result
+    assert result["metrics"]["video_insights"]["collective_dynamics"]["pitch"]["status"] != "estimated"
+
+    # A different video is refused before anything is written.
+    (run / "pitch-calibration.json").unlink()
+    video.write_bytes(video.read_bytes() + b"x")
+    with pytest.raises(ValueError, match="SHA-256"):
+        pk.calibrate_run(video, run, weights)
+    assert not (run / "pitch-calibration.json").exists()

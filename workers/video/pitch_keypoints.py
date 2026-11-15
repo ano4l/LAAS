@@ -2,8 +2,11 @@
 
 A keypoint model marks known pitch landmarks (line junctions, penalty spots, circle
 points) in a frame. A homography fitted to them maps image foot points onto the pitch
-plane. Each frame is calibrated on its own: nothing is carried over, smoothed or
-interpolated, and a frame that fails a check has no pitch positions at all.
+plane. Each frame is calibrated on its own, and a frame that fails a check has no
+pitch positions at all: nothing is carried into it or interpolated. Where the calibrated
+frames agree on one camera position, pitch_camera.py then steadies them (fixed position,
+turn and zoom smoothed over about half a second); a frame that step cannot explain keeps
+its own fit.
 
 The pitch size is not measured. Markings with fixed dimensions (penalty and goal areas,
 centre circle, penalty spots) are placed by the Laws of the Game; touchline and goal-line
@@ -17,7 +20,7 @@ import math
 import cv2
 import numpy as np
 
-VERSION = "pitch-keypoints-1"
+VERSION = "pitch-keypoints-2"
 LENGTH_M, WIDTH_M = 105., 68.  # assumed, not measured
 MIN_CONFIDENCE = .5
 MIN_LANDMARKS = 5  # four fit exactly, so a fifth is the first that can disagree
@@ -28,7 +31,7 @@ MAX_ERROR_M = 1.5
 MIN_IMAGE_AREA = .015  # landmark hull as a share of the image
 MIN_SPAN_M = 9.  # landmarks must spread along both pitch axes
 MARGIN_M = 3.  # foot points this far outside the pitch outline are still drawn
-LIMITATIONS = ["Each frame is calibrated on its own from landmarks a model found; nothing is smoothed, carried over or interpolated.",
+LIMITATIONS = ["Each frame is calibrated from landmarks a model found. Where the frames agree on one camera position, the mapping is refitted with that position fixed and its turn and zoom are smoothed over about half a second; otherwise each frame stands alone. A frame without a calibration gets no positions: nothing is carried into it or interpolated.",
                "The pitch is assumed to be 105 x 68 m. Fixed markings follow the Laws of the Game; a different pitch size shifts positions near the touchlines and goal lines.",
                "Fit error measures agreement among the landmarks used, not the accuracy of player positions. It has not been checked against measured positions.",
                "Foot points are the bottom centre of a detection box; occlusion, jumps and lens distortion move them. Positions far from any landmark are less certain."]
@@ -86,6 +89,7 @@ def fit(xy, confidence, width, height):
     if inliers.sum() < MIN_LANDMARKS or inliers.mean() < MIN_AGREEMENT:
         return dict(status="invalid", reason=f"Only {int(inliers.sum())} of {seen} landmarks agree with one pitch fit", landmarks_seen=seen)
     image, pitch = image[inliers], pitch[inliers]
+    numbers = np.flatnonzero(keep)[inliers] + 1
     matrix, _ = cv2.findHomography(image, pitch, 0)
     if matrix is None or not np.isfinite(matrix).all() or abs(np.linalg.det(matrix)) < 1e-12:
         return dict(status="invalid", reason="Degenerate pitch fit", landmarks_seen=seen)
@@ -106,7 +110,9 @@ def fit(xy, confidence, width, height):
         # Scaled so the landmarks lie at positive depth; to_pitch relies on that sign.
         matrix = matrix * np.sign(w[0]) / np.linalg.norm(matrix)
         return dict(record, status="calibrated", matrix=[float(f"{v:.10g}") for v in matrix.ravel()],
-                    mean_reprojection_px=round(float(back.mean()), 2))
+                    mean_reprojection_px=round(float(back.mean()), 2),
+                    # [landmark number, x px, y px] of the landmarks used, so later steps can be checked against them.
+                    landmarks=[[int(n), round(float(x), 1), round(float(y), 1)] for n, (x, y) in zip(numbers, image)])
     return dict(record, status="invalid", reason=reason)
 
 
@@ -169,8 +175,24 @@ class PitchKeypointModel:
         return fit(result.keypoints.xy[best].cpu().numpy(), result.keypoints.conf[best].cpu().numpy(), width, height)
 
 
-def document(frames, model_name, model_sha256=None, stride=1):
-    """The per-run calibration artifact. `frames`: {frame_idx: record}."""
+def document(frames, model_name, model_sha256=None, stride=1, video=None):
+    """The per-run calibration artifact. `frames`: {frame_idx: record}.
+
+    With `video` = (width, height, fps), the calibrated records are first steadied in
+    place with one camera for the clip (see pitch_camera.py).
+    """
+    camera = None
+    if video:
+        from workers.video.pitch_camera import stabilise
+        try:
+            camera = stabilise(frames, *video)
+        except Exception as error:  # steadying is an extra; a failure leaves the per-frame fits as they were
+            for record in frames.values():
+                if "frame_matrix" in record:
+                    record["matrix"] = record.pop("frame_matrix")
+                if record["status"] == "calibrated":
+                    record["stabilised"] = False
+            camera = dict(status="not_stabilised", reason=f"Steadying failed: {type(error).__name__}", frames_stabilised=0)
     calibrated = [r for r in frames.values() if r["status"] == "calibrated"]
     reasons = {}
     for record in frames.values():
@@ -178,7 +200,7 @@ def document(frames, model_name, model_sha256=None, stride=1):
             # Count "Only 3 ..." and "Only 4 ..." together.
             reason = ("Too few landmarks agree with one pitch fit" if "agree" in record["reason"] else "Too few pitch landmarks") if record["reason"].startswith("Only") else record["reason"]
             reasons[reason] = reasons.get(reason, 0) + 1
-    return dict(schema_version=VERSION, method="per_frame_landmark_homography", review_status="unreviewed", accuracy_evaluated=False,
+    return dict(schema_version=VERSION, method="landmark_homography_with_clip_camera" if camera and camera["frames_stabilised"] else "per_frame_landmark_homography", review_status="unreviewed", accuracy_evaluated=False,
                 model=model_name, model_sha256=model_sha256, frame_stride=stride,
                 assumed_pitch=dict(length_m=LENGTH_M, width_m=WIDTH_M, measured=False),
                 parameters=dict(min_landmark_confidence=MIN_CONFIDENCE, min_landmarks=MIN_LANDMARKS, ransac_threshold_m=RANSAC_M, min_landmark_agreement=MIN_AGREEMENT,
@@ -186,6 +208,76 @@ def document(frames, model_name, model_sha256=None, stride=1):
                                 min_landmark_span_m=MIN_SPAN_M, outside_pitch_margin_m=MARGIN_M),
                 summary=dict(frames_tried=len(frames), frames_calibrated=len(calibrated),
                              mean_error_m=round(float(np.mean([r["mean_error_m"] for r in calibrated])), 3) if calibrated else None,
-                             rejected=reasons),
+                             rejected=reasons, camera=camera),
                 limitations=LIMITATIONS,
                 frames={str(index): record for index, record in sorted(frames.items())})
+
+
+CALIBRATION_WARNING = ("Pitch positions in the shape view are estimates from automatic per-frame calibration that assumes a 105 x 68 m pitch. "
+                       "They are unreviewed, not checked against measured positions, and absent for frames that fail the calibration checks.")
+
+
+def _write_json(path, value):
+    import json
+    import os
+    import tempfile
+    from pathlib import Path
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as stream:
+        json.dump(value, stream)
+        temporary = stream.name
+    try:
+        os.replace(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
+def calibrate_run(video, run_directory, weights, device="cpu", stride=1, progress=None):
+    """Add pitch calibration to an existing run without re-tracking.
+
+    Calibrates the frames the run analysed, writes pitch-calibration.json and
+    recomputes the insights that use it. Detections and tracks are untouched.
+    Nothing is written unless the whole video decodes. Returns the manifest.
+    """
+    import hashlib
+    import json
+    from pathlib import Path
+    from workers.video.insights import from_tracking
+    from workers.video.sequence_context import load_context
+
+    video, run_directory, weights = Path(video), Path(run_directory), Path(weights)
+    manifest = json.loads((run_directory / "manifest.json").read_text(encoding="utf-8"))
+    metadata, summary = manifest["metadata"], manifest["detection_summary"]
+    with video.open("rb") as source:
+        if hashlib.file_digest(source, "sha256").hexdigest() != metadata.get("sha256"):
+            raise ValueError("This video is not the run's source: SHA-256 differs")
+    frame_stride = max(1, round(metadata["fps"] / summary["sample_fps"]))
+    wanted = set(range(0, summary["decoded_frames"], frame_stride * stride))
+    model, frames, index = PitchKeypointModel(weights, device), {}, 0
+    capture = cv2.VideoCapture(str(video))
+    try:
+        while True:
+            ok, frame = capture.read()
+            if not ok:
+                break
+            if index in wanted:
+                frames[index] = model.calibrate(frame)
+                if progress and len(frames) % 25 == 0:
+                    progress(len(frames), len(wanted))
+            index += 1
+    finally:
+        capture.release()
+    if index < summary["decoded_frames"] - max(2, frame_stride):
+        raise ValueError(f"Video decoding stopped at frame {index} of {summary['decoded_frames']}; nothing was written.")
+    with weights.open("rb") as stream:
+        calibration = document(frames, weights.name, hashlib.file_digest(stream, "sha256").hexdigest(), frame_stride * stride,
+                               (metadata["width"], metadata["height"], metadata["fps"]))
+    _write_json(run_directory / "pitch-calibration.json", calibration)
+    summary["pitch_calibration"] = {key: calibration[key] for key in ("schema_version", "method", "model", "model_sha256", "frame_stride", "assumed_pitch", "summary")}
+    if CALIBRATION_WARNING not in manifest.setdefault("warnings", []):
+        manifest["warnings"].append(CALIBRATION_WARNING)
+    context = load_context(run_directory / "sequence-context.json", manifest)
+    manifest.setdefault("metrics", {})["video_insights"] = from_tracking(
+        json.loads((run_directory / "tracking.json").read_text(encoding="utf-8")), metadata, summary, context, frames)
+    _write_json(run_directory / "metrics.json", manifest["metrics"])
+    _write_json(run_directory / "manifest.json", manifest)
+    return manifest

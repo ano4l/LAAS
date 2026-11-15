@@ -8,8 +8,8 @@ import { DataTable, Disclosure, EmptyState, EvidenceChip, Field, Pager, Panel, S
 
 export type ShapeEllipse = { centroid_x_pct: number; centroid_y_pct: number; major_radius_px: number; minor_radius_px: number; angle_degrees: number; area_image_pct: number; rms_spread_px: number; point_count: number };
 /** Estimated positions on an assumed pitch, present only when that frame passed automatic calibration. */
-type PitchSnapshot = { players: { track_id: string; x_m: number; y_m: number }[]; players_not_placed: number; landmarks_used: number; fit_error_m: number; visible_area_m: [number, number][]; length_extent_m: number | null; width_extent_m: number | null; hull_area_m2: number | null };
-type PitchStatus = { status: string; reason?: string | null; assumed_pitch?: { length_m: number; width_m: number; measured: boolean }; frames_tried?: number; frames_calibrated?: number; limitations?: string[] };
+type PitchSnapshot = { players: { track_id: string; x_m: number; y_m: number }[]; players_not_placed: number; landmarks_used: number; fit_error_m: number; stabilised?: boolean; visible_area_m: [number, number][]; length_extent_m: number | null; width_extent_m: number | null; hull_area_m2: number | null };
+type PitchStatus = { status: string; reason?: string | null; assumed_pitch?: { length_m: number; width_m: number; measured: boolean }; frames_tried?: number; frames_calibrated?: number; frames_stabilised?: number; limitations?: string[] };
 type Snapshot = { timestamp_seconds: number; players: { track_id: string; x_pct: number; y_pct: number }[]; ellipse: ShapeEllipse; pitch?: PitchSnapshot };
 export type DynamicsWindow = { start_seconds: number; end_seconds: number; supported_seconds: number; observed_frames: number; mean_visible_players: number; mean_area_image_pct: number; centroid_x_pct: number; centroid_y_pct: number; motion_alignment: number | null; alignment_supported_seconds: number; snapshot: Snapshot };
 export type CollectiveDynamics = { schema_version: string; reference: { title: string; url: string; version: number }; pitch?: PitchStatus; coordinate_system: string; review_status: string; source_duration_seconds: number; formation: { status: string; label: string | null; reason: string }; teams: { kit: string; scene_id: number; supported_seconds: number; source_coverage_pct: number; mean_visible_players: number; mean_area_image_pct: number; mean_alignment: number | null; timeline: DynamicsWindow[]; activity_ellipses_total?: number; activity_ellipses: { track_id: string; observed_seconds: number; observed_frames: number; ellipse: ShapeEllipse }[] }[]; parameters: Record<string, string | number>; limitations: string[] };
@@ -142,7 +142,7 @@ export function SoccerTrackShape({ data, imageWidth, imageHeight, duration, clea
                 </ul>
                 {pitch && <p className="note">
                   <strong>Estimate, not a measurement. </strong>
-                  Mapped from {pitch.landmarks_used} pitch markings found in the frame at {secs(snapshot!.timestamp_seconds, 2)}, which agree with each other to about {num(pitch.fit_error_m, 2)} m.
+                  Mapped from {pitch.landmarks_used} pitch markings found in the frame at {secs(snapshot!.timestamp_seconds, 2)}, which {pitch.stabilised ? "the steadied mapping matches" : "agree with each other"} to about {num(pitch.fit_error_m, 2)} m.
                   The pitch is assumed to be {pitchLength} × {pitchWidth} m, and positions have not been checked against measured ones.
                   {notPlaced > 0 ? ` ${notPlaced} ${notPlaced === 1 ? "player" : "players"} seen in the frame did not land on the pitch and ${notPlaced === 1 ? "is" : "are"} not drawn.` : ""}
                 </p>}
@@ -287,7 +287,7 @@ export function SoccerTrackShape({ data, imageWidth, imageHeight, duration, clea
         <p>The diagram is one actual snapshot near the middle of the second. Summary values average supported observations. Camera motion, perspective and missing players change this shape.</p>
         <p>Alignment (“moving together”) describes image motion, not proven tactical coordination. The camera view is not a pitch map, occupied territory or square metres.</p>
         {data?.pitch && (data.pitch.status === "estimated" ? <>
-          <p><strong>Pitch map. </strong>A model marks known pitch markings in a frame, and the frame is mapped onto the pitch from them. Each frame is mapped on its own; {data.pitch.frames_calibrated} of {data.pitch.frames_tried} tried frames passed the checks, and a frame that fails has no pitch positions. When several frames in a second qualify, the snapshot is the calibrated frame nearest the middle of the second.</p>
+          <p><strong>Pitch map. </strong>A model marks known pitch markings in a frame, and the frame is mapped onto the pitch from them. {data.pitch.frames_calibrated} of {data.pitch.frames_tried} tried frames passed the checks, and a frame that fails has no pitch positions. {data.pitch.frames_stabilised ? `${data.pitch.frames_stabilised} of those were then steadied: the camera is taken to stand in one place for the whole clip, and its turn and zoom are smoothed over about half a second. The rest keep their own frame-by-frame mapping.` : "Each frame is mapped on its own."} When several frames in a second qualify, the snapshot is the calibrated frame nearest the middle of the second.</p>
           {data.pitch.limitations?.length ? <ul>{data.pitch.limitations.map((limitation, index) => <li key={index}>{limitation}</li>)}</ul> : null}
         </> : <p><strong>Pitch map unavailable. </strong>{data.pitch.reason}</p>)}
         {data?.limitations.length ? <ul>{data.limitations.map((limitation, index) => <li key={index}>{limitation}</li>)}</ul> : null}

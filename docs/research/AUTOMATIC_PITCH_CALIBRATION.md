@@ -14,17 +14,31 @@ For each analysed frame (every frame on a GPU, about five per second on a CPU):
    - the landmarks span at least 9 m along both pitch axes and at least 1.5% of the image area;
    - mean landmark error is at most 0.6 m and the worst is at most 1.5 m;
    - the mapping is not mirrored and does not fold across the horizon.
-5. A rejected frame has no pitch positions. Nothing is smoothed, carried over from another frame or interpolated.
+5. A rejected frame has no pitch positions. Nothing is carried into it from another frame or interpolated.
+6. The calibrated frames are then steadied with one camera for the clip, where they agree on one (next section).
 
-Results are written to `pitch-calibration.json` in the run directory, with the per-frame matrix or the rejection reason. The shape snapshot for each second prefers a calibrated frame; if none qualifies, that second has a camera view only.
+Results are written to `pitch-calibration.json` in the run directory, with the per-frame matrix or the rejection reason, and the image positions of the landmarks used. The shape snapshot for each second prefers a calibrated frame; if none qualifies, that second has a camera view only.
 
 Player foot points (bottom centre of the detection box) are projected through the frame's own mapping. A player who lands more than 3 m outside the pitch outline is counted as not placed and is not drawn.
+
+## Steadying: one camera for the clip
+
+A frame-by-frame homography has eight free numbers, so small landmark errors move the whole map between frames. A broadcast camera stands in one place and only turns and zooms. `workers/video/pitch_camera.py`:
+
+1. Reads a camera position and focal length out of each calibrated frame's own fit (pinhole camera, square pixels, principal point at the image centre).
+2. Takes the median position as the clip's camera. If fewer than 8 frames give a position, or the positions scatter by more than 20% of the camera's distance to the pitch centre (for example a clip that mixes cameras), nothing is steadied and every frame keeps its own fit.
+3. Refits each frame with the position fixed: rotation and zoom only, four numbers instead of eight.
+4. Smooths rotation and zoom with a local straight-line fit over about half a second (Gaussian weights, sigma 0.15 s, window 0.45 s either side). Smoothing never crosses a gap longer than 0.5 s between calibrated frames, a turn of more than 4 degrees or a zoom change of more than 15% between neighbouring samples.
+5. Keeps the steadied mapping for a frame only if it still matches that frame's landmarks to 1.0 m on average and 2.5 m at worst. Otherwise the frame keeps its own fit and is marked `stabilised: false`.
+
+A steadied frame stores both mappings: `matrix` (steadied, the one used) and `frame_matrix` (its own fit). Frames that were never calibrated are untouched. The run summary records the camera position, how many frames were steadied, and the frame-to-frame wobble of one fixed image point before and after.
 
 ## What is assumed
 
 - **Pitch size is not measured.** Touchline and goal-line landmarks assume 105 x 68 m. Markings with fixed sizes (penalty and goal areas, centre circle, penalty spots) follow the Laws of the Game. On a pitch of another size, positions near the edges shift.
 - **Landmarks 11, 12, 19 and 20** are taken to be where the penalty arc meets the penalty-area line. This was read off the model's output on test frames, not from documentation.
 - **No lens distortion model.** A homography cannot correct a wide-angle lens.
+- **Steadying assumes one fixed camera position per clip**, turning and zooming only, with no roll change being special-cased (roll is fitted freely and smoothed).
 
 ## What has and has not been checked
 
@@ -33,11 +47,16 @@ Checked, on one 30 s Bundesliga broadcast clip (the model's own training domain)
 - 11 frames spread through the clip all calibrated, using 6 to 15 landmarks, with mean landmark error of 0.17 to 0.40 m.
 - Drawn back onto the frames, the fitted lines follow the real markings near the landmarks. Away from them (near touchline, far end of the halfway line) the fitted lines were off by roughly 1 to 2 m by eye.
 
+- Steadying, on the same clip's 188 stored calibrations (landmark positions were not stored for that run, so it was fitted to each frame's own mapping): one camera was found, on the halfway line about 38 m behind the near touchline and 17 m above the pitch, with a position scatter of 4%. All 188 frames were steadied. The wobble of a fixed image point fell from 0.22 m to 0.06 m per frame step. The steadied mapping moved positions by 0.64 m on average (1.2 m in the worst frame) from the frame's own fit. Drawn on three frames, the two sets of lines were equally close to the real markings by eye; neither was clearly better.
+- On synthetic cameras with landmark noise, steadying halved both the wobble and the position error near the touchline. Synthetic data shares the method's assumptions, so this shows the code is right, not that real positions are.
+
 Not checked:
+
+- Whether steadying makes real positions more accurate. Only that it makes them steadier.
+- Steadying on a clip with replays, cuts or a moving camera.
 
 - Accuracy of player positions against any measured reference. The fit error describes agreement among landmarks, not position accuracy.
 - Amateur footage, low cameras, faded or missing lines, non-standard pitches, wide-angle lenses. The model was trained on Bundesliga main-camera frames and should be expected to do worse elsewhere.
-- Stability from frame to frame. Each frame is fitted alone, so positions can jitter between snapshots.
 - The rejection thresholds. They are starting points chosen on the test frames, not tuned on labelled data.
 
 ## Model and licence
@@ -49,6 +68,6 @@ The model is an Ultralytics YOLO model, so it carries the same AGPL-3.0 terms as
 ## Next steps that would make the metres trustworthy
 
 1. A labelled evaluation set with known positions, to measure real error.
-2. Temporal modelling: solve the camera position once, then pan, tilt and zoom per frame, and smooth those rather than fitting every frame alone.
+2. Use the clip camera to recover frames with too few landmarks for a fit of their own (two landmarks are enough once the position is known).
 3. A lens distortion term.
 4. Measured pitch dimensions per venue.
