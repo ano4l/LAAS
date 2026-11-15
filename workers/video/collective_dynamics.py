@@ -13,6 +13,17 @@ REFERENCE=dict(title='SoccerTrack: Collective Dynamics Analysis',version=21,
     url='https://www.kaggle.com/code/chaozhuang/soccertrack-collective-dynamics-analysis')
 
 
+def pitch_status(pitch):
+    if pitch is None:
+        return dict(status='unavailable',reason='Pitch calibration was not run for this analysis.')
+    from workers.video import pitch_keypoints as pk
+    calibrated=sum(1 for record in pitch.values() if record.get('status')=='calibrated')
+    return dict(status='estimated' if calibrated else 'unavailable',reason=None if calibrated else 'No analysed frame passed the pitch calibration checks.',
+        review_status='unreviewed',accuracy_evaluated=False,method='per_frame_landmark_homography',
+        assumed_pitch=dict(length_m=pk.LENGTH_M,width_m=pk.WIDTH_M,measured=False),outside_pitch_margin_m=pk.MARGIN_M,
+        frames_tried=len(pitch),frames_calibrated=calibrated,limitations=pk.LIMITATIONS)
+
+
 def ellipse(points,width,height):
     xy=np.asarray(points,dtype=float)
     if len(xy)<3 or xy.shape!=(len(xy),2) or not np.isfinite(xy).all():
@@ -27,12 +38,29 @@ def ellipse(points,width,height):
         rms_spread_px=round(float(np.sqrt(np.mean(np.sum((xy-centre)**2,axis=1)))),4),point_count=len(xy))
 
 
-def collective_dynamics(frames,metadata,sample_fps):
+def pitch_snapshot(record,players,width,height):
+    """Estimated pitch positions for one calibrated frame. Players that do not land on the pitch are counted, not placed."""
+    import cv2
+    from workers.video import pitch_keypoints as pk
+    xy,usable=pk.to_pitch(record,[(p['x'],p['y']) for p in players])
+    placed=[dict(track_id=p['track'],x_m=round(float(x),2),y_m=round(float(y),2)) for p,(x,y),ok in zip(players,xy,usable) if ok]
+    out=dict(players=placed,players_not_placed=int((~usable).sum()),landmarks_used=record['landmarks_used'],fit_error_m=record['mean_error_m'],
+        visible_area_m=pk.visible_area(record,width,height),length_extent_m=None,width_extent_m=None,hull_area_m2=None)
+    if len(placed)>=3:
+        points=np.array([(p['x_m'],p['y_m']) for p in placed],dtype=np.float32)
+        out.update(length_extent_m=round(float(np.ptp(points[:,0])),1),width_extent_m=round(float(np.ptp(points[:,1])),1),
+            hull_area_m2=round(float(cv2.contourArea(cv2.convexHull(points))),0))
+    return out
+
+
+def collective_dynamics(frames,metadata,sample_fps,pitch=None):
     width,height=metadata['width'],metadata['height'];duration=metadata['duration_seconds']
     diagonal=math.hypot(width,height);step=1/sample_fps
     windows={};activity=defaultdict(list);history={};supported=defaultdict(float)
     for frame in frames:
         t,dt=frame['time'],frame['duration']
+        calibration=(pitch or {}).get(frame.get('frame'))
+        if not calibration or calibration.get('status')!='calibrated':calibration=None
         # Duplicate identities are ambiguous, rather than extra team members.
         counts=defaultdict(int)
         for p in frame['players']:
@@ -69,17 +97,19 @@ def collective_dynamics(frames,metadata,sample_fps):
                 key=(*group,bucket)
                 record=windows.setdefault(key,dict(start_seconds=float(bucket),end_seconds=min(duration,bucket+1.),
                     supported_seconds=0.,observed_frames=0,players_sum=0.,area_sum=0.,x_sum=0.,y_sum=0.,
-                    alignment_sum=0.,alignment_supported_seconds=0.,snapshot=None,snapshot_offset=math.inf))
+                    alignment_sum=0.,alignment_supported_seconds=0.,snapshot=None,snapshot_rank=(True,math.inf)))
                 record['supported_seconds']+=weight;record['observed_frames']+=1
                 record['players_sum']+=len(players)*weight;record['area_sum']+=shape['area_image_pct']*weight
                 record['x_sum']+=shape['centroid_x_pct']*weight;record['y_sum']+=shape['centroid_y_pct']*weight
                 if alignment is not None:
                     record['alignment_sum']+=alignment*weight;record['alignment_supported_seconds']+=weight
-                offset=abs(t-(record['start_seconds']+record['end_seconds'])/2)
-                if offset<record['snapshot_offset']:
-                    record['snapshot_offset']=offset
+                # The frame nearest the middle of the second; a frame with a pitch calibration is preferred over one without.
+                rank=(calibration is None,abs(t-(record['start_seconds']+record['end_seconds'])/2))
+                if rank<record['snapshot_rank']:
+                    record['snapshot_rank']=rank
                     record['snapshot']=dict(timestamp_seconds=round(t,4),ellipse=shape,
                         players=[dict(track_id=p['track'],x_pct=round(100*p['x']/width,4),y_pct=round(100*p['y']/height,4)) for p in players])
+                    if calibration:record['snapshot']['pitch']=pitch_snapshot(calibration,players,width,height)
     teams=[]
     for scene,kit in sorted(supported,key=lambda g:(g[0],g[1])):
         records=[];total_area=total_players=alignment_sum=alignment_seconds=0.
@@ -109,11 +139,11 @@ def collective_dynamics(frames,metadata,sample_fps):
         source_duration_seconds=duration,
         formation=dict(status='unavailable',label=None,
             reason='Named tactical formation needs calibrated pitch coordinates, full outfield coverage, goalkeeper/role separation and reliable identities. This notebook supplies collective-shape methods, not a formation classifier.'),
-        teams=teams,parameters=dict(min_visible_tracked_players=3,min_detection_confidence=.45,window_seconds=1,
+        pitch=pitch_status(pitch),teams=teams,parameters=dict(min_visible_tracked_players=3,min_detection_confidence=.45,window_seconds=1,
             covariance='sample_ddof_1',ellipse_standard_deviations=1,motion_lag_seconds=[.4,.6],min_alignment_movers=3,
             min_activity_observations=8,min_activity_observed_seconds=.5,max_activity_ellipses_per_group=80),
         limitations=['Visible scene-scoped kit subsets, not complete identified teams; goalkeeper observations are included when grouped.',
-            'Camera panning, zoom, perspective and temporary identity errors affect shape, activity and alignment. Units are image pixels / percent of image area, never square metres.',
+            'Camera panning, zoom, perspective and temporary identity errors affect shape, activity and alignment. Image measures are pixels / percent of image area. Pitch metres, where a snapshot has them, are separate estimates from automatic calibration.',
             'One-standard-deviation ellipses describe spatial dispersion; they are not confidence intervals, occupied territory or named tactical formations.',
             'All points are observed foot-point detections. Missing frames/players are not interpolated; snapshots are real frames, not window-average formations.',
             'Motion alignment is a camera-image diagnostic among supported movers, not tactical coordination or possession. Stationary/uncertain movement remains unclassified.'])

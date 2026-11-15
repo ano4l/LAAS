@@ -52,6 +52,8 @@ Copy `.env.example` to `.env` if customization is needed. The API loads the root
 - `BALL_CONFIDENCE` / `OBJECT_CONFIDENCE`: separate raw-ball and high-confidence person thresholds, defaults 0.1 / 0.45. Established person tracks can recover observations down to 0.1; low-score observations cannot start reported tracks. These are prediction thresholds, not accuracy scores.
 - `TRACKER_BACKEND`: `botsort` (default, sparse optical-flow camera compensation, no appearance ReID) or `bytetrack`. Benchmark both on the intended camera.
 - `YOLO_BALL_RESCUE_PATH`: optional trusted secondary sports-ball weights. Missing/weak primary ball observations trigger sampled global search and recent-ball crops; positions are never interpolated.
+- `YOLO_PITCH_MODEL_PATH`: optional trusted pitch-landmark pose weights (32 landmarks). Defaults to `models/pitch-keypoints/football-pitch-detection.pt` when that file exists; `off` disables it. With it, each analysed frame is mapped onto an assumed 105 x 68 m pitch and the Shape tab gains an estimated top-down pitch map. Frames that fail the checks get no pitch positions. See `docs/research/AUTOMATIC_PITCH_CALIBRATION.md`.
+- `PITCH_STRIDE`: optional; calibrate every Nth analysed frame. Defaults to every frame on a GPU and about five per second on a CPU.
 - `YOLO_BALL_MODEL_PATH`: optional trusted dedicated ball weights. Without it, the football model supplies both classes. Ball observations are retained independently of person-track confirmation; missing positions are not interpolated.
 - `MAX_UPLOAD_MB`: default 4096. Uploads also need temporary disk space; align any hosting proxy limits.
 - `STORAGE_ROOT`: default `data/storage`, containing uploads, outputs and SQLite. Use a persistent disk for hosting.

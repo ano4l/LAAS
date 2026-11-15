@@ -104,6 +104,9 @@ def test_gateway_auth_upload_completion_and_signed_media(tmp_path, monkeypatch):
     assert client.get(url.split("signature=")[0] + "signature=invalid%E2%9C%93").status_code == 403
     assert client.get(url.split("?")[0] + "?expires=1&signature=bad").status_code == 403
     assert client.get(url, headers={"Range": "bytes=0-3"}).status_code == 206
+    source = done["result"]["files"]["source_video"]
+    assert token not in source and client.get(source).content == b"controlled video"
+    assert client.get(source.split("signature=")[0] + "signature=bad").status_code == 403
     assert client.get("/runs", headers=headers).json()[0]["run_id"] == run_id
 
 
