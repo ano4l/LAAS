@@ -18,10 +18,11 @@ def pitch_status(pitch):
         return dict(status='unavailable',reason='Pitch calibration was not run for this analysis.')
     from workers.video import pitch_keypoints as pk
     calibrated=sum(1 for record in pitch.values() if record.get('status')=='calibrated')
+    stabilised=sum(1 for record in pitch.values() if record.get('stabilised'))
     return dict(status='estimated' if calibrated else 'unavailable',reason=None if calibrated else 'No analysed frame passed the pitch calibration checks.',
-        review_status='unreviewed',accuracy_evaluated=False,method='per_frame_landmark_homography',
+        review_status='unreviewed',accuracy_evaluated=False,method='landmark_homography_with_clip_camera' if stabilised else 'per_frame_landmark_homography',
         assumed_pitch=dict(length_m=pk.LENGTH_M,width_m=pk.WIDTH_M,measured=False),outside_pitch_margin_m=pk.MARGIN_M,
-        frames_tried=len(pitch),frames_calibrated=calibrated,limitations=pk.LIMITATIONS)
+        frames_tried=len(pitch),frames_calibrated=calibrated,frames_stabilised=stabilised,limitations=pk.LIMITATIONS)
 
 
 def ellipse(points,width,height):
@@ -44,7 +45,7 @@ def pitch_snapshot(record,players,width,height):
     from workers.video import pitch_keypoints as pk
     xy,usable=pk.to_pitch(record,[(p['x'],p['y']) for p in players])
     placed=[dict(track_id=p['track'],x_m=round(float(x),2),y_m=round(float(y),2)) for p,(x,y),ok in zip(players,xy,usable) if ok]
-    out=dict(players=placed,players_not_placed=int((~usable).sum()),landmarks_used=record['landmarks_used'],fit_error_m=record['mean_error_m'],
+    out=dict(players=placed,players_not_placed=int((~usable).sum()),landmarks_used=record['landmarks_used'],fit_error_m=record.get('stable_error_m',record['mean_error_m']),stabilised=bool(record.get('stabilised')),
         visible_area_m=pk.visible_area(record,width,height),length_extent_m=None,width_extent_m=None,hull_area_m2=None)
     if len(placed)>=3:
         points=np.array([(p['x_m'],p['y_m']) for p in placed],dtype=np.float32)

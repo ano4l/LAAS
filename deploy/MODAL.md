@@ -37,6 +37,17 @@ After a successful deployment and GPU smoke test, set `ANALYSIS_COMPUTE=modal` i
 
 These are app controls, **not an account spending cap or a guarantee of a zero bill**. Modal meters compute, model/container loading, and storage; other apps in the account also consume credits. Check current credits and billing limits in Modal before larger workloads. No payment method or automatic top-up is configured by this project.
 
+## Adding pitch maps to runs made before the pitch model
+
+`backfill_pitch` adds pitch calibration to finished runs without re-tracking them. It reads the stored `source.mp4`, calibrates the frames the run analysed, writes `pitch-calibration.json`, and recomputes the insights. Detections and tracks are untouched. It has no web route; run it from a trusted machine:
+
+```powershell
+node scripts/python.mjs -m modal run deploy/modal_app.py::backfill_pitch
+node scripts/python.mjs -m modal run deploy/modal_app.py::backfill_pitch --request-ids JOB_ID,JOB_ID
+```
+
+Runs that already have calibration are skipped unless `--force` is passed. Runs whose source video is no longer stored are skipped. It uses the GPU, so it costs credits, but it does not count against the analysis attempt ledger. Do not run it while an analysis is in progress.
+
 ## Storage and recovery
 
 Inputs and outputs are staged under `/requests/REQUEST_ID` in the private Modal Volume. After all artifacts are imported and verified locally, that request directory is removed from Modal. The usage ledger remains. Failed/interrupted imports retain their directory for investigation; an interrupted local API can leave a cloud call running. Check the Modal app dashboard before retrying or deleting its request directory. Retrying may start and count a new attempt. Inspect retained files with:
