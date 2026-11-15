@@ -261,6 +261,39 @@ def put_sequence_context(run_id:str,payload:dict):
         except ValueError as exc:raise HTTPException(422,str(exc)) from exc
 
 
+@app.get('/runs/{run_id}/players')
+def get_player_labels(run_id:str):
+    from workers.video.player_labels import load_labels
+    with REVIEW_LOCK:
+        path,manifest=_review_location(run_id)
+        try:return load_labels(path.with_name('player-labels.json'),manifest)
+        except ValueError as exc:raise HTTPException(422,str(exc)) from exc
+
+
+@app.get('/roster')
+def get_roster():
+    from workers.video.player_labels import roster
+    return dict(players=roster(settings.output_dir.glob('*/player-labels.json')))
+
+
+@app.get('/runs/{run_id}/players/suggestions')
+def get_merge_suggestions(run_id:str):
+    from workers.video.merge_suggestions import suggest_for_run
+    path,manifest=_review_location(run_id)
+    return suggest_for_run(path.parent,manifest)
+
+
+@app.post('/runs/{run_id}/players')
+def put_player_labels(run_id:str,payload:dict):
+    from workers.video.player_labels import save_labels
+    from workers.video.event_review import ReviewConflict
+    with REVIEW_LOCK:
+        path,manifest=_review_location(run_id)
+        try:return save_labels(path.with_name('player-labels.json'),manifest,payload,path.with_name('tracking.json'))
+        except ReviewConflict as exc:raise HTTPException(409,str(exc)) from exc
+        except ValueError as exc:raise HTTPException(422,str(exc)) from exc
+
+
 def _review_location(run_id):
     manifest=_read_manifest(run_id)
     if not manifest:raise HTTPException(404,'Run not found')

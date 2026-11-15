@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { PlayerProfiles } from "../PlayerProfiles";
 import type { AnalysisResult } from "../main";
 import { MeasurementDefinitions, ProvisionalKitPanel } from "../VideoMeasurements";
 import type { ClipTabProps } from "../Workspace";
@@ -6,7 +7,8 @@ import { DASH, num, pct, secs } from "../format";
 import { TeamName } from "../kits";
 import { DataTable, Disclosure, EmptyState, Field, Pager, Panel, StatTile, WatchButton } from "../ui";
 
-export function PlayersTab({ result }: ClipTabProps) {
+export function PlayersTab({ result, api, authHeaders }: ClipTabProps & { api: string; authHeaders: () => Record<string, string> }) {
+  const [profile, setProfile] = useState<string | null>(null);
   const summary = result.detection_summary;
   const m = result.metrics.video_measurements;
   const quality = result.metrics.video_insights?.quality;
@@ -46,7 +48,9 @@ export function PlayersTab({ result }: ClipTabProps) {
         />
       </div>
 
-      <TrackExplorer result={result} />
+      <PlayerProfiles key={result.run_id} result={result} api={api} authHeaders={authHeaders} selected={profile} onSelect={setProfile} />
+
+      <TrackExplorer result={result} onProfile={id => { setProfile(id); document.getElementById("player-profile")?.scrollIntoView({ block: "start" }); }} />
 
       {m && (m.provisional_kit_analytics !== undefined || m.event_candidates !== undefined)
         ? <ProvisionalKitPanel measurements={m} />
@@ -55,7 +59,7 @@ export function PlayersTab({ result }: ClipTabProps) {
   );
 }
 
-function TrackExplorer({ result }: { result: AnalysisResult }) {
+function TrackExplorer({ result, onProfile }: { result: AnalysisResult; onProfile: (trackId: string) => void }) {
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState("observations");
   const [page, setPage] = useState(0);
@@ -107,7 +111,12 @@ function TrackExplorer({ result }: { result: AnalysisResult }) {
                   <td className="num" data-label="Visible">{detail?.visibility_pct == null ? DASH : pct(detail.visibility_pct)}</td>
                   <td className="num" data-label="Image movement" title="Technical name: image displacement, in pixels">{detail ? `${num(detail.image_displacement_px)} px` : DASH}</td>
                   <td className="num" data-label="Near-ball frames">{num(detail?.near_ball_frames, 0)}</td>
-                  <td className="actions"><WatchButton at={track.first_seen_ms / 1000} describe={`Watch track ${track.track_id}`} /></td>
+                  <td className="actions">
+                    <span className="row">
+                      <WatchButton at={track.first_seen_ms / 1000} describe={`Watch track ${track.track_id}`} />
+                      {(track.object_type === "player" || track.object_type === "goalkeeper") && <button type="button" className="btn btn--secondary btn--sm" onClick={() => onProfile(track.track_id)} aria-label={`Open the profile for ${track.track_id}`}>Profile</button>}
+                    </span>
+                  </td>
                 </tr>
               );
             })}

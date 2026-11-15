@@ -43,6 +43,15 @@ The first version fixed one camera position for the whole clip (the median of th
 - **Heat map.** The pitch is cut into 21 x 14 cells of about 5 x 4.9 m. Each calibrated sample adds its time to the cell each placed player stood in (player-seconds). A second grid records how long each cell was inside the camera's view, so a cell that was never seen is shown as unknown, not empty.
 - **Distance and speed.** For each unbroken stretch of one track, positions are averaged over 0.5 s and distance is summed in 0.5 s hops. A hop faster than 11 m/s is treated as an error and left out (and counted). A missed sample, in tracking or in calibration, ends the stretch; nothing is bridged. The first and last quarter second of a stretch, where a full average does not fit, are not measured.
 - **Per group:** summed distance and measured player-seconds over all its tracks, mean speed (distance divided by measured time), and the fastest half-second among tracks measured for at least 2 s.
+- **Per tracked identity** (`players`): the same distance, speed and heat-map cells for each identity measured for at least 2 s, whether or not it was sorted into a kit group (the 60 longest-measured are kept). Group figures still count only observations sorted into that group.
+
+The Players tab shows these as a player profile. A person can give a name and shirt number to one or more tracked identities (`workers/video/player_labels.py`, stored as `player-labels.json` beside the run). Nothing is recognised automatically: there is no face recognition and no shirt-number reading. Naming only groups identities and never changes an automatic figure. Saving is refused when two identities given to one player appear together in more than two analysed frames, because one person cannot be in two places.
+
+The profile also shows:
+
+- **Time at each speed.** Half-second hops are sorted into four bands (under 2, 2 to 4, 4 to 5.5, and 5.5 m/s and over). Half-second averages flatten short bursts, so the faster bands are undercounted.
+- **Possibly the same player** (`workers/video/merge_suggestions.py`). Pairs of identities where one ends and another begins within 10 s and close enough for one person to have covered the ground (3 m plus 7 m per second of gap, at most 25 m), never two that share an analysed frame or sit in different kit groups. Without calibration at both ends the image is used instead, in player heights, over at most 3 s and without correcting for camera movement. Each suggestion counts its rivals. These are questions for a reviewer; nothing is joined automatically, and they have not been scored against labelled identities.
+- **Names saved on other clips** are offered while typing (`GET /roster`). This only saves typing; nobody is matched across clips automatically.
 
 Known weaknesses: a standing player still collects a little distance from noise; sharp turns inside a hop are cut short; a track is an unreviewed tracker identity, so one player can be several tracks and a track can swap players; the camera follows play, so the heat map favours wherever the camera pointed.
 
