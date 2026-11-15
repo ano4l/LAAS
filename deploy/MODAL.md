@@ -46,7 +46,7 @@ node scripts/python.mjs -m modal run deploy/modal_app.py::backfill_pitch
 node scripts/python.mjs -m modal run deploy/modal_app.py::backfill_pitch --request-ids JOB_ID,JOB_ID
 ```
 
-Runs that already have calibration are skipped unless `--force` is passed. Runs whose source video is no longer stored are skipped. It uses the GPU, so it costs credits, but it does not count against the analysis attempt ledger. Do not run it while an analysis is in progress.
+Runs that already have calibration are skipped unless `--force` is passed. Runs whose source video is no longer stored are skipped. It uses a GPU (an L4, or a cheaper T4 when no L4 is free), so it costs credits, but it does not count against the analysis attempt ledger. Do not run it while an analysis is in progress.
 
 ## Storage and recovery
 
