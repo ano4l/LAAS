@@ -2,18 +2,22 @@ import { useCallback, useId, useState } from "react";
 import { num, pct, range, secs } from "./format";
 import { TeamName, useKits } from "./kits";
 import { usePlaybackValue } from "./playback";
+import { PitchBoard, type BoardGroup } from "./PitchBoard";
 import { ShapeStage, type StageGroup } from "./ShapeStage";
-import { DataTable, Disclosure, EmptyState, Field, Pager, Panel, StatTile, WatchButton } from "./ui";
+import { DataTable, Disclosure, EmptyState, EvidenceChip, Field, Pager, Panel, StatTile, WatchButton } from "./ui";
 
 export type ShapeEllipse = { centroid_x_pct: number; centroid_y_pct: number; major_radius_px: number; minor_radius_px: number; angle_degrees: number; area_image_pct: number; rms_spread_px: number; point_count: number };
-type Snapshot = { timestamp_seconds: number; players: { track_id: string; x_pct: number; y_pct: number }[]; ellipse: ShapeEllipse };
+/** Estimated positions on an assumed pitch, present only when that frame passed automatic calibration. */
+type PitchSnapshot = { players: { track_id: string; x_m: number; y_m: number }[]; players_not_placed: number; landmarks_used: number; fit_error_m: number; visible_area_m: [number, number][]; length_extent_m: number | null; width_extent_m: number | null; hull_area_m2: number | null };
+type PitchStatus = { status: string; reason?: string | null; assumed_pitch?: { length_m: number; width_m: number; measured: boolean }; frames_tried?: number; frames_calibrated?: number; limitations?: string[] };
+type Snapshot = { timestamp_seconds: number; players: { track_id: string; x_pct: number; y_pct: number }[]; ellipse: ShapeEllipse; pitch?: PitchSnapshot };
 export type DynamicsWindow = { start_seconds: number; end_seconds: number; supported_seconds: number; observed_frames: number; mean_visible_players: number; mean_area_image_pct: number; centroid_x_pct: number; centroid_y_pct: number; motion_alignment: number | null; alignment_supported_seconds: number; snapshot: Snapshot };
-export type CollectiveDynamics = { schema_version: string; reference: { title: string; url: string; version: number }; coordinate_system: string; review_status: string; source_duration_seconds: number; formation: { status: string; label: string | null; reason: string }; teams: { kit: string; scene_id: number; supported_seconds: number; source_coverage_pct: number; mean_visible_players: number; mean_area_image_pct: number; mean_alignment: number | null; timeline: DynamicsWindow[]; activity_ellipses_total?: number; activity_ellipses: { track_id: string; observed_seconds: number; observed_frames: number; ellipse: ShapeEllipse }[] }[]; parameters: Record<string, string | number>; limitations: string[] };
+export type CollectiveDynamics = { schema_version: string; reference: { title: string; url: string; version: number }; pitch?: PitchStatus; coordinate_system: string; review_status: string; source_duration_seconds: number; formation: { status: string; label: string | null; reason: string }; teams: { kit: string; scene_id: number; supported_seconds: number; source_coverage_pct: number; mean_visible_players: number; mean_area_image_pct: number; mean_alignment: number | null; timeline: DynamicsWindow[]; activity_ellipses_total?: number; activity_ellipses: { track_id: string; observed_seconds: number; observed_frames: number; ellipse: ShapeEllipse }[] }[]; parameters: Record<string, string | number>; limitations: string[] };
 
 const FORMATION_PLAIN = "Naming a formation such as 4‑3‑3 or 4‑4‑2 needs calibrated pitch coordinates, every outfield player in view and reliable identities. This view shows the shape of the players the camera could see.";
 
 /** Collective shape of each visible kit group, measured in the camera image (after the SoccerTrack notebook). */
-export function SoccerTrackShape({ data, imageWidth, imageHeight, duration, videoSrc }: { data?: CollectiveDynamics; imageWidth?: number; imageHeight?: number; duration: number; videoSrc?: string }) {
+export function SoccerTrackShape({ data, imageWidth, imageHeight, duration, cleanSrc, annotatedSrc }: { data?: CollectiveDynamics; imageWidth?: number; imageHeight?: number; duration: number; cleanSrc?: string; annotatedSrc?: string }) {
   const id = useId();
   const kits = useKits();
   const [kitId, setKitId] = useState(data?.teams[0]?.kit ?? "");
@@ -21,8 +25,15 @@ export function SoccerTrackShape({ data, imageWidth, imageHeight, duration, vide
   const [follow, setFollow] = useState(true);
   const [activityPage, setActivityPage] = useState(0);
   const [footage, setFootage] = useState(true);
+  // The original upload gives a clean frame. If the browser cannot play it, the annotated video is used instead.
+  const [cleanFailed, setCleanFailed] = useState<string | null>(null);
+  const usingClean = Boolean(cleanSrc) && cleanFailed !== cleanSrc;
+  const videoSrc = usingClean ? cleanSrc : annotatedSrc;
   const [showOther, setShowOther] = useState(true);
   const [showIds, setShowIds] = useState(false);
+  const pitchAvailable = data?.pitch?.status === "estimated";
+  const [view, setView] = useState<"pitch" | "camera">(pitchAvailable ? "pitch" : "camera");
+  const pitchLength = data?.pitch?.assumed_pitch?.length_m ?? 105, pitchWidth = data?.pitch?.assumed_pitch?.width_m ?? 68;
   const team = data?.teams.find(group => group.kit === kitId) ?? data?.teams[0];
   const sourceDuration = data?.source_duration_seconds ?? duration;
   const seconds = Math.max(1, Math.ceil(sourceDuration));
@@ -45,6 +56,12 @@ export function SoccerTrackShape({ data, imageWidth, imageHeight, duration, vide
     ...(showOther && other && otherSnapshot && sameMoment ? [{ kit: other.kit, label: kits.label(other.kit), tone: kits.tone(other.kit), primary: false, players: otherSnapshot.players, ellipse: otherSnapshot.ellipse }] : []),
     { kit: team.kit, label: kits.label(team.kit), tone, primary: true, players: snapshot.players, ellipse: snapshot.ellipse },
   ] : [];
+  const pitch = snapshot?.pitch;
+  const boardGroups: BoardGroup[] = pitch && team ? [
+    ...(showOther && other && otherSnapshot?.pitch && sameMoment ? [{ kit: other.kit, label: kits.label(other.kit), tone: kits.tone(other.kit), primary: false, players: otherSnapshot.pitch.players }] : []),
+    { kit: team.kit, label: kits.label(team.kit), tone, primary: true, players: pitch.players },
+  ] : [];
+  const notPlaced = (pitch?.players_not_placed ?? 0) + (boardGroups.length > 1 ? otherSnapshot?.pitch?.players_not_placed ?? 0 : 0);
 
   return (
     <Panel
@@ -73,15 +90,35 @@ export function SoccerTrackShape({ data, imageWidth, imageHeight, duration, vide
           <div className="shapepair">
             <div className="stack stack--sm">
               <p className="row row--between note">
-                <span><TeamName id={team.kit} /> · scene {team.scene_id + 1} · camera frame, x right, y down</span>
+                <span><TeamName id={team.kit} /> · scene {team.scene_id + 1} · {view === "pitch" ? "pitch seen from above, far touchline at the top" : "camera frame, x right, y down"}</span>
                 <span className="mono">{snapshot ? `Snapshot ${secs(snapshot.timestamp_seconds, 2)}` : `${range(selectedSecond, Math.min(sourceDuration, selectedSecond + 1), 1)} · no snapshot`}</span>
               </p>
-              {snapshot && ellipse && width && height ? (
+              {pitchAvailable && (
+                <div className="viewswitch" role="group" aria-label="Diagram view">
+                  <button type="button" aria-pressed={view === "pitch"} onClick={() => setView("pitch")}>Pitch map <EvidenceChip level="estimated" /></button>
+                  <button type="button" aria-pressed={view === "camera"} onClick={() => setView("camera")}>Camera view <EvidenceChip level="seen" /></button>
+                </div>
+              )}
+              {view === "pitch" && pitchAvailable ? (pitch ? (
+                <PitchBoard
+                  length={pitchLength}
+                  width={pitchWidth}
+                  groups={boardGroups}
+                  visibleArea={pitch.visible_area_m}
+                  showIds={showIds}
+                  label={`Estimated positions of ${pitch.players.length} ${kits.label(team.kit)} players on the pitch at ${num(snapshot!.timestamp_seconds, 2)} seconds, seen from above${boardGroups.length > 1 && other && otherSnapshot?.pitch ? `, with ${otherSnapshot.pitch.players.length} players of ${kits.label(other.kit)}` : ""}. Mapped from the camera frame onto an assumed ${pitchLength} by ${pitchWidth} metre pitch; an unreviewed estimate. The dimmed part of the pitch was outside the camera frame.`}
+                />
+              ) : (
+                <div className="pitchboard pitchboard--empty" style={{ aspectRatio: `${pitchLength + 9}/${pitchWidth + 9}` }}>
+                  <p className="camera__message" role="status">{snapshot ? "No pitch map for this second. The frame did not pass the calibration checks, so no positions are placed. The camera view still shows what was seen." : "No supported group shape in this second. No positions are filled in."}</p>
+                </div>
+              )) : snapshot && ellipse && width && height ? (
                 <ShapeStage
                   width={width}
                   height={height}
                   time={snapshot.timestamp_seconds}
                   videoSrc={videoSrc}
+                  onFrameError={usingClean && annotatedSrc ? () => setCleanFailed(cleanSrc ?? null) : undefined}
                   footage={footage}
                   showIds={showIds}
                   groups={stageGroups}
@@ -93,17 +130,31 @@ export function SoccerTrackShape({ data, imageWidth, imageHeight, duration, vide
                 </div>
               )}
               <div className="row shapestage-options">
-                {videoSrc && <label className="check"><input type="checkbox" checked={footage} onChange={event => setFootage(event.target.checked)} />Real footage behind</label>}
+                {videoSrc && view === "camera" && <label className="check"><input type="checkbox" checked={footage} onChange={event => setFootage(event.target.checked)} />Real footage behind</label>}
                 {other && <label className="check"><input type="checkbox" checked={showOther} onChange={event => setShowOther(event.target.checked)} />Show {kits.label(other.kit)} too</label>}
                 <label className="check"><input type="checkbox" checked={showIds} onChange={event => setShowIds(event.target.checked)} />Track IDs</label>
               </div>
+              {view === "pitch" && pitchAvailable ? <>
+                <ul className="keyline">
+                  <li title="Technical name: detection foot point projected through a per-frame homography"><i className="shape__key shape__key--dot" aria-hidden="true" />Estimated player position</li>
+                  <li title="Technical name: convex hull of the estimated positions"><i className="shape__key shape__key--hull" aria-hidden="true" />Outline of the group (outermost players)</li>
+                  <li><i className="shape__key shape__key--unseen" aria-hidden="true" />Outside the camera frame: nothing known</li>
+                </ul>
+                {pitch && <p className="note">
+                  <strong>Estimate, not a measurement. </strong>
+                  Mapped from {pitch.landmarks_used} pitch markings found in the frame at {secs(snapshot!.timestamp_seconds, 2)}, which agree with each other to about {num(pitch.fit_error_m, 2)} m.
+                  The pitch is assumed to be {pitchLength} × {pitchWidth} m, and positions have not been checked against measured ones.
+                  {notPlaced > 0 ? ` ${notPlaced} ${notPlaced === 1 ? "player" : "players"} seen in the frame did not land on the pitch and ${notPlaced === 1 ? "is" : "are"} not drawn.` : ""}
+                </p>}
+              </> : <>
               <ul className="keyline">
                 <li title="Technical name: observed player footpoint"><i className="shape__key shape__key--ring" aria-hidden="true" />Where a player stood</li>
                 <li title="Technical name: convex hull of the observed footpoints"><i className="shape__key shape__key--hull" aria-hidden="true" />Outline of the group (outermost players)</li>
                 <li title="Technical name: one-standard-deviation (1σ) covariance ellipse"><i className="shape__key shape__key--ellipse" aria-hidden="true" />Typical spread</li>
                 <li><i className="shape__key shape__key--centre" aria-hidden="true" />Centre of the group</li>
               </ul>
-              {footage && videoSrc && snapshot && <p className="note">The picture behind is the annotated video frame at {secs(snapshot.timestamp_seconds, 2)}, the same moment the positions were measured. Rings are drawn at each player's feet.</p>}
+              {footage && videoSrc && snapshot && <p className="note">The picture behind is the {usingClean ? "original video" : "annotated video"} frame at {secs(snapshot.timestamp_seconds, 2)}, the same moment the positions were measured.{usingClean ? "" : " The boxes and numbers in it are the tracker's own drawing."} Rings are drawn at each player's feet.</p>}
+              </>}
 
               <div className="scrub">
                 <Field label="Shape at this second">
@@ -127,6 +178,17 @@ export function SoccerTrackShape({ data, imageWidth, imageHeight, duration, vide
                   <div><dt>Moving together (alignment)</dt><dd>{chosen.motion_alignment == null ? "Unavailable" : num(chosen.motion_alignment, 3)}<small>{secs(chosen.alignment_supported_seconds, 2)} motion support</small></dd></div>
                 </dl>
               ) : <p className="note">No mean or alignment is assigned here. The full clip stays in the support denominator.</p>}
+              {pitchAvailable && snapshot && <>
+                <h4 className="row">On the pitch, at the snapshot <EvidenceChip level="estimated" /></h4>
+                {pitch ? (
+                  <dl className="deflist">
+                    <div><dt>Goal-to-goal depth</dt><dd>{pitch.length_extent_m == null ? "Unknown" : `about ${num(pitch.length_extent_m)} m`}</dd></div>
+                    <div><dt>Side-to-side width</dt><dd>{pitch.width_extent_m == null ? "Unknown" : `about ${num(pitch.width_extent_m)} m`}</dd></div>
+                    <div><dt>Area inside the outline</dt><dd>{pitch.hull_area_m2 == null ? "Unknown" : `about ${num(pitch.hull_area_m2, 0)} m²`}</dd></div>
+                    <div><dt>Players placed</dt><dd>{pitch.players.length} of {snapshot.players.length}<small>visible players of this group only</small></dd></div>
+                  </dl>
+                ) : <p className="note">Unknown for this second: the frame did not pass the pitch calibration checks.</p>}
+              </>}
               {ellipse && (
                 <Disclosure summary="Exact snapshot measurements">
                   <dl className="deflist deflist--single">
@@ -136,6 +198,15 @@ export function SoccerTrackShape({ data, imageWidth, imageHeight, duration, vide
                     <div><dt>Ellipse angle</dt><dd>{num(ellipse.angle_degrees, 2)}° in image axes</dd></div>
                     <div><dt>RMS spread</dt><dd>{num(ellipse.rms_spread_px, 2)} px</dd></div>
                   </dl>
+                </Disclosure>
+              )}
+              {pitch && (
+                <Disclosure summary="Estimated pitch positions" meta={`${pitch.players.length} tracks`}>
+                  <DataTable label="Estimated snapshot player positions on the assumed pitch">
+                    <thead><tr><th scope="col">Track</th><th scope="col" className="num">Along · m</th><th scope="col" className="num">Across · m</th></tr></thead>
+                    <tbody>{pitch.players.map(player => <tr key={player.track_id}><th scope="row" className="mono">{player.track_id}</th><td className="num">{num(player.x_m)}</td><td className="num">{num(player.y_m)}</td></tr>)}</tbody>
+                  </DataTable>
+                  <p>Along runs from the left goal line as the main camera sees it; across runs from the far touchline. Estimates on an assumed {pitchLength} × {pitchWidth} m pitch.</p>
                 </Disclosure>
               )}
               {snapshot && (
@@ -212,9 +283,13 @@ export function SoccerTrackShape({ data, imageWidth, imageHeight, duration, vide
         <p>Observed footpoints replace annotated box centres; missing observations remain missing. Named tactical formations are not classified by this method.</p>
         {data?.formation.reason && <p><strong>Formation status, in the analysis's wording: </strong>{data.formation.reason}</p>}
         <p>In the diagram, the solid outline joins the outermost observed players (a convex hull), the dashed outline is a one-standard-deviation (1σ) covariance ellipse of the observed footpoints, and the cross is their mean. The second group is drawn only when its snapshot is from the same moment.</p>
-        <p>With footage on, the background is the annotated video frame at the snapshot's timestamp. Ring size grows towards the bottom of the image as a drawing aid; it is not a measured player size.</p>
+        <p>With footage on, the background is the frame at the snapshot's timestamp, taken from the original upload when it is stored and playable in this browser, otherwise from the annotated video. Ring size grows towards the bottom of the image as a drawing aid; it is not a measured player size.</p>
         <p>The diagram is one actual snapshot near the middle of the second. Summary values average supported observations. Camera motion, perspective and missing players change this shape.</p>
-        <p>Alignment (“moving together”) describes image motion, not proven tactical coordination. This is not a pitch map, occupied territory or square metres.</p>
+        <p>Alignment (“moving together”) describes image motion, not proven tactical coordination. The camera view is not a pitch map, occupied territory or square metres.</p>
+        {data?.pitch && (data.pitch.status === "estimated" ? <>
+          <p><strong>Pitch map. </strong>A model marks known pitch markings in a frame, and the frame is mapped onto the pitch from them. Each frame is mapped on its own; {data.pitch.frames_calibrated} of {data.pitch.frames_tried} tried frames passed the checks, and a frame that fails has no pitch positions. When several frames in a second qualify, the snapshot is the calibrated frame nearest the middle of the second.</p>
+          {data.pitch.limitations?.length ? <ul>{data.pitch.limitations.map((limitation, index) => <li key={index}>{limitation}</li>)}</ul> : null}
+        </> : <p><strong>Pitch map unavailable. </strong>{data.pitch.reason}</p>)}
         {data?.limitations.length ? <ul>{data.limitations.map((limitation, index) => <li key={index}>{limitation}</li>)}</ul> : null}
       </Disclosure>
     </Panel>

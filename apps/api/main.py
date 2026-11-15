@@ -101,7 +101,9 @@ def capabilities() -> dict:
         "limits": {"max_upload_mb": settings.max_upload_mb, "allowed_video_suffixes": sorted(ALLOWED_VIDEO_SUFFIXES)},
         "ai": provider_status(),
         "analysis": {"synthetic_upload_fallback": False, "worker_concurrency": 1,
-                     "event_detection": False, "pitch_calibration": False,
+                     "event_detection": False,
+                     # Automatic per-frame estimates for the shape view only; not measured distances or speeds.
+                     "pitch_calibration": bool(yolo_capabilities(ROOT).get("pitch_calibration")),
                      "automatic_video_insights": True, "event_candidate_method": "unreviewed_temporal_geometry"},
     }
 
@@ -376,6 +378,10 @@ def _read_manifest(run_id: str | None) -> dict | None:
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
         from workers.video.insights import ensure_insights
         ensure_insights(manifest, manifest_path.parent)
+        # The untouched upload, for clean frames behind diagrams. Offered only when that exact file is still stored.
+        name = Path(str(manifest.get("metadata", {}).get("filename") or "")).name
+        if name and (settings.upload_dir / name).is_file():
+            manifest.setdefault("files", {})["source_video"] = f"/media/uploads/{name}"
         return manifest
     except json.JSONDecodeError:
         return None

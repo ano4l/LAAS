@@ -86,7 +86,7 @@ export type AnalysisResult = {
   };
   phases: { phase: string; start_ms: number; end_ms: number; confidence: number }[];
   report: { title: string; summary: string; recommendations: { label: string; detail: string; confidence: number }[] };
-  files: { annotated_video: string; tracking_json?: string; metrics_json?: string; report_json?: string; manifest_json?: string };
+  files: { annotated_video: string; source_video?: string; tracking_json?: string; metrics_json?: string; report_json?: string; manifest_json?: string };
 };
 
 export type RunSummary = {

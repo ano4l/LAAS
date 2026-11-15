@@ -13,7 +13,7 @@ export type StageGroup = {
 type Point = [number, number];
 
 /** Convex hull (monotone chain) of the observed footpoints: the outermost players, joined. Nothing is added. */
-function hull(points: Point[]): Point[] {
+export function hull(points: Point[]): Point[] {
   const sorted = [...points].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
   if (sorted.length < 3) return sorted;
   const cross = (o: Point, a: Point, b: Point) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
@@ -34,8 +34,8 @@ function hull(points: Point[]): Point[] {
  * With footage on, the still behind the drawing is the real video frame at the snapshot's own timestamp,
  * so the rings sit under the players they describe. Positions are image coordinates, not pitch coordinates.
  */
-export function ShapeStage({ width, height, groups, time, videoSrc, footage, showIds, label }: {
-  width: number; height: number; groups: StageGroup[]; time: number; videoSrc?: string; footage: boolean; showIds: boolean; label: string;
+export function ShapeStage({ width, height, groups, time, videoSrc, footage, showIds, label, onFrameError }: {
+  width: number; height: number; groups: StageGroup[]; time: number; videoSrc?: string; footage: boolean; showIds: boolean; label: string; onFrameError?: () => void;
 }) {
   const id = useId();
   const frame = useRef<HTMLVideoElement>(null);
@@ -72,7 +72,7 @@ export function ShapeStage({ width, height, groups, time, videoSrc, footage, sho
           disablePictureInPicture
           onSeeked={event => setShown(event.currentTarget.currentTime)}
           onLoadedData={event => { if (Math.abs(event.currentTarget.currentTime - time) < .001) setShown(time); }}
-          onError={() => setFailed(true)}
+          onError={() => { if (onFrameError) onFrameError(); else setFailed(true); }}
         />
       )}
       <svg className="shapestage__overlay" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="xMidYMid meet" role="img" aria-label={label}>

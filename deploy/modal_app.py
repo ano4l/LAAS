@@ -14,12 +14,14 @@ volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 
 # Only source and the explicitly selected weights enter the image, never .env or user videos.
 if modal.is_local():
-    from workers.video.yolo_adapter import model_path
+    from workers.video.yolo_adapter import model_path, pitch_model_path
     weights = model_path(ROOT)
+    pitch_weights = pitch_model_path(ROOT)
     if not weights.is_file():
         raise FileNotFoundError("Set YOLO_MODEL_PATH to trusted football weights before deploying Modal")
 else:
     weights = Path("/models/football.pt")
+    pitch_weights = None  # already baked into the image when it was built
 rescue_weights = ROOT / 'references/Soccer-Analytics/yolov8m.pt' if modal.is_local() else Path('/models/ball-rescue.pt')
 
 image = (
@@ -33,6 +35,9 @@ image = (
     .env({"PYTHONPATH": "/app", "YOLO_MODEL_PATH": "/models/football.pt", "YOLO_DEVICE": "0",
           "BALL_CONFIDENCE": "0.1", "OBJECT_CONFIDENCE": "0.45", "TRACKER_BACKEND":"botsort", "YOLO_BALL_RESCUE_PATH": "/models/ball-rescue.pt"})
 )
+# Optional pitch landmark model. Without it the worker runs exactly as before and reports no pitch positions.
+if pitch_weights is not None and pitch_weights.is_file():
+    image = image.add_local_file(str(pitch_weights), "/models/pitch.pt", copy=True).env({"YOLO_PITCH_MODEL_PATH": "/models/pitch.pt"})
 
 
 @app.function(image=image, gpu="L4", cpu=2, memory=8192, volumes={"/jobs": volume},

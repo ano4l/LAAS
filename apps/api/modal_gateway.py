@@ -105,6 +105,10 @@ def create_gateway(volume, analyze, access_key, root=Path("/jobs"), call_lookup=
                                  metrics_json="metrics.json", report_json="report.json", manifest_json="manifest.json").items():
                 path = f"/media/{job['id']}/{job['run_id']}/{name}"
                 result["files"][key] = f"{path}?expires={expires}&signature={signature(path, expires)}"
+            # The untouched upload, for clean frames behind diagrams. Offered only while the file is still stored.
+            if (root / "requests" / job["id"] / "source.mp4").is_file():
+                path = f"/media/{job['id']}/{job['run_id']}/source.mp4"
+                result["files"]["source_video"] = f"{path}?expires={expires}&signature={signature(path, expires)}"
         return out
 
     @app.get("/health")
@@ -262,10 +266,14 @@ def create_gateway(volume, analyze, access_key, root=Path("/jobs"), call_lookup=
         expected = hmac.new(access_key.encode(), f"{path}:{expires}".encode(), hashlib.sha256).hexdigest()
         if expires < time.time() or expires > time.time() + 3660 or not hmac.compare_digest(signature.encode(), expected.encode()):
             raise HTTPException(403, "Media link expired; refresh the analysis")
-        if filename not in ARTIFACTS:
+        if filename not in ARTIFACTS and filename != "source.mp4":
             raise HTTPException(404, "File not found")
         volume.reload()
         file_path = root / "requests" / job_id / "outputs" / run_id / filename
+        if filename == "source.mp4":
+            if not (file_path.parent / "manifest.json").is_file():
+                raise HTTPException(404, "File not found")
+            file_path = root / "requests" / job_id / "source.mp4"
         if not file_path.is_file():
             raise HTTPException(404, "File not found")
         return FileResponse(file_path)

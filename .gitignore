@@ -26,3 +26,4 @@ models/*.pt
 data/qa/
 
 .vercel
+models/**/*.pt

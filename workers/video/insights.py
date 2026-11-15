@@ -17,8 +17,9 @@ def pct(value, total):
 
 
 class VideoInsights:
-    def __init__(self, metadata, sample_fps, context=None):
+    def __init__(self, metadata, sample_fps, context=None, pitch=None):
         self.meta, self.fps = metadata, sample_fps
+        self.pitch = pitch  # {frame_idx: calibration record}, or None when calibration was not run
         self.context = context
         self.frames = []
 
@@ -55,7 +56,7 @@ class VideoInsights:
             if ranked and ranked[0][0] <= .65 and (len(ranked) == 1 or ranked[1][0]-ranked[0][0] >= .2):
                 controller = dict(players[ranked[0][1]], distance=ranked[0][0])
         scene = ball["scene"] if ball else (players[0]["scene"] if players else None)
-        self.frames.append(dict(time=t, duration=duration, players=players, ball=ball,
+        self.frames.append(dict(frame=frame_idx, time=t, duration=duration, players=players, ball=ball,
                                 controller=controller, scene=scene))
 
     def finish(self):
@@ -236,7 +237,7 @@ class VideoInsights:
                     first, last = supported[0], supported[-1]
                     notes.append(dict(kind="shape", text=f"{g['kit']} image width changes from {first['width_pct']:.1f}% to {last['width_pct']:.1f}% between supported windows starting at {first['start_seconds']}s and {last['start_seconds']}s. Camera motion and perspective affect this comparison."))
         from workers.video.collective_dynamics import collective_dynamics
-        dynamics=collective_dynamics(self.frames,self.meta,self.fps)
+        dynamics=collective_dynamics(self.frames,self.meta,self.fps,self.pitch)
         return dict(schema_version=VERSION, source="full_tracking_observations", review_status="unreviewed", coordinate_system="camera_image",
             source_video={key: self.meta.get(key) for key in ["filename", "sha256", "width", "height", "fps", "frame_count"]}, sample_fps=self.fps,
             source_duration_seconds=duration, analyzed_frames=len(self.frames), analyzed_seconds=round(sum(f["duration"] for f in self.frames), 3),
@@ -256,10 +257,10 @@ class VideoInsights:
                 confidence="Detection confidence and heuristic support are not measured accuracy. No named player, home/away identity, completed pass, shot, xG or calibrated physical metric is inferred."))
 
 
-def from_tracking(rows, metadata, summary, context=None):
+def from_tracking(rows, metadata, summary, context=None, pitch=None):
     from workers.video.track_linking import linked_view
     rows, identity_source = linked_view(rows)
-    calc = VideoInsights(metadata, summary["sample_fps"], context)
+    calc = VideoInsights(metadata, summary["sample_fps"], context, pitch)
     groups = {index: list(group) for index, group in groupby(sorted(rows, key=lambda r: r["frame_idx"]), key=lambda r: r["frame_idx"])}
     stride = max(1, round(metadata["fps"]/summary["sample_fps"]))
     for index in range(0, summary["decoded_frames"], stride):
@@ -286,8 +287,11 @@ def ensure_insights(manifest, directory):
             or not {"width", "height", "fps", "duration_seconds"} <= manifest.get("metadata", {}).keys()
             or not {"sample_fps", "decoded_frames"} <= manifest.get("detection_summary", {}).keys()):
         return False
+    pitch = None
+    if (directory/"pitch-calibration.json").is_file():
+        pitch = {int(index): record for index, record in json.loads((directory/"pitch-calibration.json").read_text(encoding="utf-8")).get("frames", {}).items()}
     manifest.setdefault("metrics", {})["video_insights"] = from_tracking(
-        json.loads((directory/"tracking.json").read_text(encoding="utf-8")), manifest["metadata"], manifest["detection_summary"],context)
+        json.loads((directory/"tracking.json").read_text(encoding="utf-8")), manifest["metadata"], manifest["detection_summary"],context,pitch)
     import os
     import tempfile
     for name, value in [("metrics.json", manifest["metrics"]), ("manifest.json", manifest)]:

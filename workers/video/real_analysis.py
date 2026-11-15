@@ -14,7 +14,7 @@ from uuid import uuid4
 
 import cv2
 
-from workers.video.yolo_adapter import model_path, yolo_capabilities
+from workers.video.yolo_adapter import model_path, pitch_model_path, yolo_capabilities
 from workers.video.detector import FootballDetector
 from workers.video.accuracy import analysis_settings
 from workers.video import insights as video_insights, measurements as video_measurements
@@ -68,6 +68,14 @@ def run_real_analysis(input_video: Path, output_root: Path, progress=None) -> di
                                 ball_confidence=ball_confidence, object_confidence=object_confidence,
                                 sample_fps=metadata["fps"] / stride, ball_weights=ball_weights,
                                 tile_size=options["tile_size"],ball_rescue_weights=rescue_weights)
+    pitch_weights = pitch_model_path(ROOT)
+    pitch_model = None
+    if pitch_weights:
+        from workers.video.pitch_keypoints import PitchKeypointModel
+        pitch_model = PitchKeypointModel(pitch_weights, device)
+    # Every analysed frame on a GPU; about five per second on a CPU, where the landmark model is slow.
+    pitch_stride = max(1, int(os.getenv("PITCH_STRIDE", "1" if device != "cpu" else str(round(metadata["fps"] / stride / 5)))))
+    pitch_frames = {}
     run_id = uuid4().hex
     out_dir = output_root / run_id
     out_dir.mkdir(parents=True)
@@ -125,6 +133,8 @@ def run_real_analysis(input_video: Path, output_root: Path, progress=None) -> di
                             tracking_file.write(json.dumps(row))
                             first = False
                         appearance.observe(frame, last_rows)  # before overlays are painted on the frame
+                        if pitch_model and analyzed % pitch_stride == 0:
+                            pitch_frames[frame_idx] = pitch_model.calibrate(frame)
                         link_rows.extend({k: r.get(k) for k in ("frame_idx", "track_id", "object_type", "bbox", "team", "scene_id")}
                                          for r in last_rows if r.get("track_id") and r["object_type"] in PEOPLE)
                         ball_frames += int(any(r["object_type"] in {"ball", "sports ball"} for r in last_rows))
@@ -179,6 +189,12 @@ def run_real_analysis(input_video: Path, output_root: Path, progress=None) -> di
         ball_path = select_ball_path(linked_rows, metadata, camera=camera)
         write_rows(out_dir / "tracking.json", linked_rows)
         scope = dict(sample_fps=metadata["fps"] / stride, decoded_frames=decoded)
+        pitch_document = None
+        if pitch_model:
+            from workers.video.pitch_keypoints import document
+            with pitch_weights.open("rb") as weights:
+                pitch_document = document(pitch_frames, pitch_weights.name, hashlib.file_digest(weights, "sha256").hexdigest(), stride * pitch_stride)
+            (out_dir / "pitch-calibration.json").write_text(json.dumps(pitch_document), encoding="utf-8")
         warnings = ["Detections and track IDs are unreviewed model predictions, not verified player identities.",
                     "Jersey groups are anonymous colour estimates, not verified teams. Passes, tackles, shots, goals, possession and xG are not verified.",
                     "Coordinates are image pixels. Distance, speed and pitch heatmaps require camera calibration.",
@@ -186,6 +202,8 @@ def run_real_analysis(input_video: Path, output_root: Path, progress=None) -> di
                     "Timestamps use the reported frame rate. Normalize variable-frame-rate footage before precise temporal review."]
         warnings.append("linked_track_id joins track fragments offline using timing, image position and kit colour. Links are unreviewed and can join different players; track_id keeps the original tracker output. Measurements and insights use the linked identities; the annotated video shows original tracker IDs.")
         warnings.append("Ball candidates pass geometry filtering; ball_selected marks the most consistent observed path chosen over the whole clip; it is provisional, not a confirmed trajectory. Missing positions remain missing; none are interpolated.")
+        if pitch_model:
+            warnings.append("Pitch positions in the shape view are estimates from automatic per-frame calibration that assumes a 105 x 68 m pitch. They are unreviewed, not checked against measured positions, and absent for frames that fail the calibration checks.")
         if stride > 1:
             warnings.append("Only sampled frames have detection overlays. Unsampled frames are not analysed or interpolated.")
         if options["tile_size"]:
@@ -213,6 +231,8 @@ def run_real_analysis(input_video: Path, output_root: Path, progress=None) -> di
         summary["quality_version"] = "research-association-2"
         summary["track_linking"] = linking["summary"]
         summary["ball_path"] = ball_path
+        summary["pitch_calibration"] = ({key: pitch_document[key] for key in ("schema_version", "method", "model", "model_sha256", "frame_stride", "assumed_pitch", "summary")}
+                                        if pitch_document else dict(status="not_run", reason="No pitch landmark model is configured."))
         summary["linked_tracks"] = linking["identities"]
         if rescue_weights:
             with rescue_weights.open('rb') as stream:
@@ -226,7 +246,7 @@ def run_real_analysis(input_video: Path, output_root: Path, progress=None) -> di
         metrics = dict(possession=dict(home_pct=None, away_pct=None, timeline=[]), teams={}, players=[], events=[],
                        data_quality=dict(mode="yolo_bytetrack"), phase_count=0,
                        video_measurements=video_measurements.from_tracking(linked_rows, metadata, scope),
-                       video_insights=video_insights.from_tracking(linked_rows, metadata, scope))
+                       video_insights=video_insights.from_tracking(linked_rows, metadata, scope, pitch=pitch_frames if pitch_model else None))
         report = dict(title="Video detection and tracking", summary=f"Analyzed {analyzed} frames across {decoded / metadata['fps']:.1f} seconds. Found {len(track_counts)} temporary object tracks.", recommendations=[])
         manifest = dict(schema_version="1.0", run_id=run_id, engine="yolo_bytetrack", metadata=metadata,
                         tracking=preview, detection_summary=summary, warnings=warnings, metrics=metrics, phases=[], report=report,
