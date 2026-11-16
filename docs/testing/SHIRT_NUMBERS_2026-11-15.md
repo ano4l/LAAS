@@ -27,7 +27,9 @@ Checked by eye on six sample crops per identity, for the 10 proposals in three c
 - **Two-digit proposals: 6 of 6 right** (19, 14, 11, 14, 15, 28). The number is plainly visible on the back.
 - **One-digit proposals: 4 of 4 wrong.** Three were "1" read from a striped shirt or an arm, one was "2" read from a front view with no number.
 
-The other 16 proposals were not looked at. No clip has labelled shirt numbers, so there is no accuracy figure.
+The other 16 proposals were not looked at. None of these clips has labelled shirt numbers.
+
+Later the same day the reader was scored on ten labelled SoccerNet clips (`SOCCERNET_GSR_2026-11-15.md`): 27 of 29 two-digit proposals that could be checked were right, and 4 of 7 one-digit ones.
 
 ## What changed because of it
 

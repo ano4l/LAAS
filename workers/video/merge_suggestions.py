@@ -17,7 +17,7 @@ import numpy as np
 
 from workers.video import pitch_keypoints as pk
 
-VERSION = "merge-suggestions-1"
+VERSION = "merge-suggestions-2"
 PEOPLE = {"player", "goalkeeper"}
 MIN_OBSERVATIONS = 5
 END_SAMPLES = 3  # an identity's end and start positions are the median of this many samples
@@ -30,9 +30,14 @@ IMAGE_SLACK_HEIGHTS = .6
 IMAGE_HEIGHTS_PER_S = 1.5
 MAX_HEIGHT_RATIO = 1.6
 MAX_SUGGESTIONS = 60
+# A pair whose distance is at most this share of what one player could cover in the gap is a close fit.
+# On ten SoccerNet test clips close fits were right about half the time (19 of 40 checked), all suggestions 43 of 224;
+# how many other identities fit the same gap did not predict it. See docs/testing/SOCCERNET_GSR_2026-11-15.md.
+CLOSE_FIT = .2
 LIMITATIONS = ["Suggestions are questions for a person watching the footage, not merges. Nothing is joined automatically.",
                "They rest on timing and position only. Team-mates in the same kit who cross near each other look alike here.",
-               "Distances in metres are estimates from automatic pitch calibration and are not checked against measured positions.",
+               "On ten labelled SoccerNet test clips, about half of the close-fit suggestions that could be checked joined the same player (19 of 40), and about one in five of all suggestions (43 of 224).",
+               "Distances in metres are estimates from automatic pitch calibration, which was off by several metres on those test clips.",
                "Where no pitch calibration covers both ends, distance is judged in the image without correcting for camera movement.",
                "A player who is off screen for longer than the gap limit is not suggested."]
 
@@ -80,7 +85,8 @@ def suggest(rows, fps, pitch=None):
     base = dict(schema_version=VERSION, review_status="unreviewed", limitations=LIMITATIONS,
                 parameters=dict(max_gap_seconds=MAX_GAP_S, slack_m=SLACK_M, speed_m_s=SPEED_M_S, max_distance_m=MAX_DISTANCE_M,
                                 image_max_gap_seconds=IMAGE_MAX_GAP_S, image_slack_heights=IMAGE_SLACK_HEIGHTS,
-                                image_heights_per_second=IMAGE_HEIGHTS_PER_S, max_height_ratio=MAX_HEIGHT_RATIO, min_observations=MIN_OBSERVATIONS))
+                                image_heights_per_second=IMAGE_HEIGHTS_PER_S, max_height_ratio=MAX_HEIGHT_RATIO, min_observations=MIN_OBSERVATIONS, close_fit=CLOSE_FIT),
+                evaluation=dict(dataset="SoccerNet Game State Reconstruction, 10 test clips", close_fit_right=19, close_fit_checked=40, all_right=43, all_checked=224))
     identities = _identities(rows)
     if not fps or len(identities) < 2:
         return dict(base, suggestions=[], suggestions_total=0)
@@ -114,13 +120,15 @@ def suggest(rows, fps, pitch=None):
                 detail = dict(basis="image", distance_m=None, distance_heights=round(distance, 2))
             candidates.append(dict(from_track=a["track_id"], to_track=b["track_id"], gap_seconds=round(gap, 2),
                                    from_last_seen_seconds=round(a["last"] / fps, 2), to_first_seen_seconds=round(b["first"] / fps, 2),
-                                   same_kit=(a["team"] == b["team"]) if a["team"] and b["team"] else None, fit=round(distance / reach, 3), **detail))
+                                   same_kit=(a["team"] == b["team"]) if a["team"] and b["team"] else None, fit=round(distance / reach, 3),
+                                   close_fit=distance / reach <= CLOSE_FIT, **detail))
     ends, starts = Counter(c["from_track"] for c in candidates), Counter(c["to_track"] for c in candidates)
     for candidate in candidates:
         # Other identities that would fit the same end or the same start equally plausibly on these rules.
         candidate["rivals"] = ends[candidate["from_track"]] + starts[candidate["to_track"]] - 2
-    candidates.sort(key=lambda c: (c["rivals"], c["basis"] != "pitch", c["fit"], c["from_track"], c["to_track"]))
-    return dict(base, suggestions=candidates[:MAX_SUGGESTIONS], suggestions_total=len(candidates))
+    # Closest fit first: on labelled clips that predicted a right suggestion; the number of rivals did not.
+    candidates.sort(key=lambda c: (c["fit"], c["rivals"], c["basis"] != "pitch", c["from_track"], c["to_track"]))
+    return dict(base, suggestions=candidates[:MAX_SUGGESTIONS], suggestions_total=len(candidates), close_fit_total=sum(c["close_fit"] for c in candidates))
 
 
 def appearances(rows, fps, max_gap_seconds=1.):
