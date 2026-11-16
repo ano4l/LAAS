@@ -24,11 +24,11 @@ node scripts/python.mjs scripts/modal_analyze.py data/qa/football-test.mp4
 
 The image includes only the video worker source and selected trusted football weights. If `models/pitch-keypoints/football-pitch-detection.pt` exists locally at deploy time (or `YOLO_PITCH_MODEL_PATH` points to one), the pitch landmark model is baked in too and runs gain estimated pitch positions; otherwise the worker runs without them. Reference weights are discovered locally at build time, or set `YOLO_MODEL_PATH` for a replacement before deploying. Videos, `.env`, API tokens, and the rest of the reference repositories are not baked into the image. Modal credentials live in the user profile's `.modal.toml`, outside the repository. The server process must use the same authenticated OS account/profile.
 
-After a successful deployment and GPU smoke test, set `ANALYSIS_COMPUTE=modal` in `.env` and restart the API. Leave `ANALYSIS_PROFILE=accurate` for every-frame / 1280px inference. Remove `ANALYSIS_FPS`, `YOLO_IMAGE_SIZE`, and `YOLO_BALL_MODEL_PATH` overrides when using Modal; the deployed model and profile are authoritative. Set `ANALYSIS_COMPUTE=local` and restart to return to local processing. Cloud failures never silently run on the CPU or generate demo results.
+After a successful deployment and GPU smoke test, set `ANALYSIS_COMPUTE=modal` in `.env` and restart the API. Leave `ANALYSIS_PROFILE=accurate` for every-frame / 1280px inference. Remove `ANALYSIS_FPS`, `YOLO_IMAGE_SIZE`, and `YOLO_BALL_MODEL_PATH` overrides when using Modal; the deployed model and profile are authoritative. Set `ANALYSIS_COMPUTE=local` and restart to return to local processing. Cloud failures never silently run on the CPU or generate demo results. To allow a CPU run after a cloud failure (no token, no network, clip over the limits, run limit reached, timeout), set `ANALYSIS_FALLBACK=local`: the job then runs on this machine with `FALLBACK_PROFILE` (default `balanced`), and the run records `compute_fallback` with the reason and carries a warning. A run-limit refusal still uploads the clip and starts a container before it is refused.
 
 ## Prototype usage controls
 
-- One L4 GPU container maximum; no warm minimum; two-second idle window.
+- One GPU container maximum (an L4, or an A10G when no L4 is free); no warm minimum; two-second idle window. The run records which GPU it used.
 - Two CPU cores requested, 8GiB RAM, ten-minute execution timeout and three-minute startup timeout.
 - No configured exception retries. Infrastructure preemption can still restart work.
 - Clips limited to 120 seconds, 250MiB, up to 4K and 60fps.

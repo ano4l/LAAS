@@ -18,7 +18,7 @@ def main():
     parser.add_argument("--device", help="cpu or CUDA device index such as 0")
     parser.add_argument("--fps", type=float, help="Target analysis frames per second")
     parser.add_argument("--image-size", type=int)
-    parser.add_argument("--profile", choices=["accurate", "preview"])
+    parser.add_argument("--profile", choices=["accurate", "balanced", "preview"])
     parser.add_argument("--ball-tile-size", type=int, help="Experimental overlapping ball crops; 0 disables")
     args = parser.parse_args()
     if not args.video.is_file():

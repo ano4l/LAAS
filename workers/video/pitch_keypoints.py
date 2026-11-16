@@ -177,9 +177,16 @@ class PitchKeypointModel:
 
     def __init__(self, weights, device, line_every=None):
         from ultralytics import YOLO
-        self.model, self.device, self.name = YOLO(str(weights)), device, getattr(weights, "name", str(weights))
+        exported = str(weights).lower().endswith(".onnx")  # same network, run by ONNX Runtime
+        self.model, self.device, self.name = YOLO(str(weights), task="pose") if exported else YOLO(str(weights)), device, getattr(weights, "name", str(weights))
         self.line_every, self.calibrated = line_every or LINE_EVERY, 0
-        if getattr(self.model, "task", None) != "pose" or list(getattr(self.model.model, "kpt_shape", [])[:1]) != [len(landmarks())]:
+        network = self.model.model
+        if exported:
+            # An export carries its landmark layout in metadata that is only read when the runtime loads it.
+            import numpy as np
+            self.model.predict(np.zeros((64, 64, 3), dtype=np.uint8), imgsz=640, device=device, verbose=False)
+            network = self.model.predictor.model
+        if getattr(self.model, "task", None) != "pose" or list(getattr(network, "kpt_shape", [])[:1]) != [len(landmarks())]:
             raise ValueError("The pitch model must be a pose model with 32 pitch landmarks")
 
     def calibrate(self, frame):
