@@ -81,7 +81,7 @@ try:
     for name in ("annotated.mp4", "tracking.json", "manifest.json", "track-links.json"):
         assert name in present, f"{name} missing from the run"
     print(json.dumps(dict(status="complete", requested_compute=args.compute, ran_on=summary.get("compute_provider", "local"),
-                          fallback=summary.get("compute_fallback"), gpu=summary.get("gpu"), device=summary.get("device"),
+                          fallback=summary.get("compute_fallback"), gpu=summary.get("gpu"), device=summary.get("device"), runtime=summary.get("inference_runtime"),
                           profile=summary.get("analysis_profile"), cpu_threads=summary.get("cpu_threads"),
                           wall_seconds=round(time.monotonic() - started, 1), processing_seconds=summary.get("processing_seconds"),
                           pitch_calibration="pitch-calibration.json" in present, files=present)))

@@ -26,11 +26,18 @@ def main() -> None:
     sys.path.insert(0, str(ROOT))
     from workers.video.real_analysis import physical_cores
     threads = os.getenv("YOLO_CPU_THREADS") or str(physical_cores())
-    pitch = ROOT / "models" / "pitch-keypoints" / "football-pitch-detection.pt"
+    # ONNX Runtime ran the detector seven times faster than PyTorch on the server's CPU, which has no AVX.
+    # LAAS_RUNTIME=pytorch goes back to the original weights.
+    import importlib.util
+    exported = os.getenv("LAAS_RUNTIME", "onnx") == "onnx" and importlib.util.find_spec("onnxruntime") is not None
+    def weights(path):
+        return path.with_suffix(".onnx") if exported and path.with_suffix(".onnx").is_file() else path
+    detector = weights(ROOT / "models" / "football.pt")
+    pitch = weights(ROOT / "models" / "pitch-keypoints" / "football-pitch-detection.pt")
     os.environ.update(
         APP_ENV="production",
         YOLO_DEVICE="cpu",
-        YOLO_MODEL_PATH=str(ROOT / "models" / "football.pt"),
+        YOLO_MODEL_PATH=str(detector),
         YOLO_PITCH_MODEL_PATH=str(pitch) if pitch.is_file() else "off",
         YOLO_CONFIG_DIR=str(storage / "ultralytics"),
         STORAGE_ROOT=str(storage / "data"),

@@ -10,5 +10,8 @@ ultralytics==8.4.178
 lap==0.5.13
 imageio-ffmpeg==0.6.0
 modal==1.6.2
+# CPU inference on the server; onnx is listed because Ultralytics checks for it before loading an export.
+onnxruntime==1.32.0
+onnx==1.23.2
 torch @ https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp312-cp312-win_amd64.whl#sha256=c52adc3bd526ff7fc5bdcc58fc4a76e6214d09951b646ffe5256ebd7ba60cef1
 torchvision @ https://download-r2.pytorch.org/whl/cpu/torchvision-0.29.1%2Bcpu-cp312-cp312-win_amd64.whl#sha256=361f943872f7763807912cc51d621f0172e8d481792f8c6f3fe1f63838a29e0c

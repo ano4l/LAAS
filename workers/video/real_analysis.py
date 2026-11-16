@@ -255,6 +255,7 @@ def run_real_analysis(input_video: Path, output_root: Path, progress=None) -> di
                        detections_by_class=dict(counts), unique_tracks=len(track_counts), ball_detected_frames=ball_frames,
                        processing_seconds=round(time.monotonic() - started, 2), device=device,
                        model=model_path(ROOT).name, model_classes=detector.names,
+                       inference_runtime="onnxruntime" if model_path(ROOT).suffix.lower() == ".onnx" else "pytorch",
                        image_size=image_size, ball_confidence=ball_confidence, object_confidence=object_confidence,
                        analysis_profile=options["profile"], ball_tile_size=options["tile_size"],
                        annotated_frames="analysed" if sparse else "all", cpu_threads=threads,

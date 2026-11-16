@@ -143,6 +143,13 @@ def main():
     (payload / "models" / "pitch-keypoints").mkdir(parents=True)
     shutil.copyfile(weights, payload / "models" / "football.pt")
     shutil.copyfile(pitch, payload / "models" / "pitch-keypoints" / pitch.name)
+    print("Exporting models to ONNX", flush=True)
+    from ultralytics import YOLO
+    for copied in (payload / "models" / "football.pt", payload / "models" / "pitch-keypoints" / pitch.name):
+        # dynamic: the worker feeds letterboxed frames whose shape follows the video, not a fixed square
+        YOLO(str(copied)).export(format="onnx", dynamic=True, simplify=True, opset=17)
+        if not copied.with_suffix(".onnx").is_file():
+            raise SystemExit(f"ONNX export of {copied.name} failed")
     for name in ("Start-LAAS.py", "smoke.py", "smoke-clip.mp4", "requirements-windows.txt", "READ-ME.txt", "LAAS-Startup.xml"):
         shutil.copyfile(WINDOWS / name, payload / name)
     (payload / "BUILD.json").write_text(json.dumps(dict(commit=commit, uncommitted_changes=dirty, packages=sorted(versions)), indent=2), encoding="utf-8")
