@@ -40,7 +40,9 @@ if pitch_weights is not None and pitch_weights.is_file():
     image = image.add_local_file(str(pitch_weights), "/models/pitch.pt", copy=True).env({"YOLO_PITCH_MODEL_PATH": "/models/pitch.pt"})
 
 
-@app.function(image=image, gpu="L4", cpu=2, memory=8192, volumes={"/jobs": volume},
+# L4 first; an A10G when Modal has no L4 free. On 16 Nov 2026 a job waited 15 minutes for an L4 and
+# was cancelled. Both have 24 GB and run the same CUDA build; the A10G costs more per second.
+@app.function(image=image, gpu=["L4", "A10G"], cpu=2, memory=8192, volumes={"/jobs": volume},
               min_containers=0, max_containers=1, scaledown_window=2, timeout=600,
               startup_timeout=180, retries=0)
 def analyze(request_id: str, profile: str = "accurate", tile_size: int = 0):

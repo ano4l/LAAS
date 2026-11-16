@@ -28,7 +28,7 @@ After a successful deployment and GPU smoke test, set `ANALYSIS_COMPUTE=modal` i
 
 ## Prototype usage controls
 
-- One L4 GPU container maximum; no warm minimum; two-second idle window.
+- One GPU container maximum (an L4, or an A10G when no L4 is free); no warm minimum; two-second idle window. The run records which GPU it used.
 - Two CPU cores requested, 8GiB RAM, ten-minute execution timeout and three-minute startup timeout.
 - No configured exception retries. Infrastructure preemption can still restart work.
 - Clips limited to 120 seconds, 250MiB, up to 4K and 60fps.
