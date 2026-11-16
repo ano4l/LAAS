@@ -59,13 +59,23 @@ def test_too_far_for_the_gap_or_too_long_a_gap_is_not_suggested():
     assert pairs(suggest(late, FPS, {i: record() for i in range(200)})) == []
 
 
-def test_rivals_are_counted_and_the_clearest_pair_comes_first():
+def test_rivals_are_counted_and_the_closest_fit_comes_first():
     rows = (track("L1", range(0, 30), 40, 30) + track("L2", range(40, 70), 41, 30) + track("L3", range(40, 70), 44, 32)
             + track("L4", range(0, 30), 80, 50) + track("L5", range(40, 70), 81, 50))
     out = suggest(rows, FPS, {i: record() for i in range(80)})
-    assert pairs(out)[0] == ("L4", "L5") and out["suggestions"][0]["rivals"] == 0
+    assert pairs(out)[0] == ("L4", "L5") and out["suggestions"][0]["rivals"] == 0  # as close as L1-L2, and unrivalled
     rivals = {(s["from_track"], s["to_track"]): s["rivals"] for s in out["suggestions"]}
     assert rivals["L1", "L2"] == 1 and rivals["L1", "L3"] == 1
+
+
+def test_a_close_fit_with_rivals_comes_before_a_loose_fit_without_and_only_close_fits_are_flagged():
+    rows = (track("L1", range(0, 30), 40, 30) + track("L2", range(40, 70), 41, 30) + track("L3", range(40, 70), 44, 32)
+            + track("L4", range(0, 30), 80, 50) + track("L5", range(40, 70), 87, 50))  # L4-L5: 7 m in 1.1 s, unrivalled but loose
+    out = suggest(rows, FPS, {i: record() for i in range(80)})
+    assert pairs(out)[0] == ("L1", "L2") and out["suggestions"][0]["rivals"] == 1
+    close = {(s["from_track"], s["to_track"]): s["close_fit"] for s in out["suggestions"]}
+    assert close == {("L1", "L2"): True, ("L1", "L3"): False, ("L4", "L5"): False}
+    assert out["close_fit_total"] == 1 and out["parameters"]["close_fit"] == .2
 
 
 def test_without_calibration_the_image_is_used_over_a_shorter_gap_and_says_so():

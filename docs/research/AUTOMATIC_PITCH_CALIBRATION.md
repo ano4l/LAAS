@@ -1,6 +1,6 @@
 # Automatic pitch calibration (estimates for the shape view)
 
-Status: first version, unvalidated. It feeds the estimated pitch map, heat map, distance and speed figures in the Shape tab, all labelled as estimates. The measured fixed-camera path in `FIXED_CAMERA_CALIBRATION.md` is unchanged.
+Status: first version. Checked against labelled positions on ten SoccerNet clips (see below): positions were off by a median of 5 to 21 m per clip. It feeds the estimated pitch map, heat map, distance and speed figures in the Shape tab, all labelled as estimates. The measured fixed-camera path in `FIXED_CAMERA_CALIBRATION.md` is unchanged.
 
 ## What it does
 
@@ -15,7 +15,8 @@ For each analysed frame (every frame on a GPU, about five per second on a CPU):
    - mean landmark error is at most 0.6 m and the worst is at most 1.5 m;
    - the mapping is not mirrored and does not fold across the horizon.
 5. A rejected frame has no pitch positions. Nothing is carried into it from another frame or interpolated.
-6. The calibrated frames are then steadied with one camera for the clip, where they agree on one (next section).
+6. Every fifth calibrated frame is checked against the image: the pitch's markings drawn through the fit should land on white lines, at least 75% of the drawn points within 1.5% of the image height (`pitch_lines.py`). This exposes a model that invents a consistent set of landmarks, which passes every check above. Nothing is rejected on it. If under half of the checked frames match, the clip's pitch figures carry a warning that they are likely several metres off.
+7. The calibrated frames are then steadied over time (next section).
 
 Results are written to `pitch-calibration.json` in the run directory, with the per-frame matrix or the rejection reason, and the image positions of the landmarks used. The shape snapshot for each second prefers a calibrated frame; if none qualifies, that second has a camera view only.
 
@@ -50,7 +51,7 @@ The Players tab shows these as a player profile. A person can give a name and sh
 The profile also shows:
 
 - **Time at each speed.** Half-second hops are sorted into four bands (under 2, 2 to 4, 4 to 5.5, and 5.5 m/s and over). Half-second averages flatten short bursts, so the faster bands are undercounted.
-- **Possibly the same player** (`workers/video/merge_suggestions.py`). Pairs of identities where one ends and another begins within 10 s and close enough for one person to have covered the ground (3 m plus 7 m per second of gap, at most 25 m), never two that share an analysed frame or sit in different kit groups. Without calibration at both ends the image is used instead, in player heights, over at most 3 s and without correcting for camera movement. Each suggestion counts its rivals. These are questions for a reviewer; nothing is joined automatically, and they have not been scored against labelled identities.
+- **Possibly the same player** (`workers/video/merge_suggestions.py`). Pairs of identities where one ends and another begins within 10 s and close enough for one person to have covered the ground (3 m plus 7 m per second of gap, at most 25 m), never two that share an analysed frame or sit in different kit groups. Without calibration at both ends the image is used instead, in player heights, over at most 3 s and without correcting for camera movement. They are ranked by how tight the fit is; a pair whose distance is at most 20% of what one player could cover is a close fit and is shown first, the rest behind a button. On ten labelled SoccerNet clips, 19 of 40 close fits that could be checked were the same player, and 43 of 224 of all suggestions. These are questions for a reviewer; nothing is joined automatically.
 - **Names saved on other clips** are offered while typing (`GET /roster`). This only saves typing; nobody is matched across clips automatically.
 
 Known weaknesses: a standing player still collects a little distance from noise; sharp turns inside a hop are cut short; a track is an unreviewed tracker identity, so one player can be several tracks and a track can swap players; the camera follows play, so the heat map favours wherever the camera pointed.
@@ -82,9 +83,17 @@ Checked, on one 30 s Bundesliga broadcast clip (the model's own training domain)
   The last two clips break into many short stretches (8 and 27), so many frames have too few calibrated neighbours and the wobble that remains is mostly at those breaks.
 - On synthetic cameras with landmark noise, steadying more than halved the wobble and cut the position error near the touchline by over 30%. Synthetic data shares the method's assumptions, so this shows the code is right, not that real positions are.
 
+Checked against labelled positions on ten clips of the SoccerNet Game State Reconstruction test split (Swiss Super League broadcast, outside the landmark model's training domain), in `docs/testing/SOCCERNET_GSR_2026-11-15.md`:
+
+- Positions were off by a median of 5 to 21 m per clip; 3% were within 2 m. The same with the labelled boxes, so the calibration is the cause.
+- The landmark checks do not catch a model that hallucinates a consistent set of landmarks, such as a penalty area in midfield: such a frame passes with a small fit error.
+- Distances came out about 1.6 times the labelled ones, and time at fast-running speed about seven times too high.
+- Giving rejected frames a mapping bridged from calibrated neighbours was tried: it recovered 5 of 7,500 frames, no more accurately, and was dropped.
+- Drawing the pitch's lines through each mapping and checking them against the image (step 6 above) flags all thirteen SoccerNet clips tried, and 23 of the 25 stored clips, including the Bundesliga test clips, whose drawn lines are visibly several metres off. Snapping mappings onto the lines did not make positions more accurate.
+
 Not checked:
 
-- Distance, speed and heat map values against any tracking-system reference.
+- Any of this on the Bundesliga footage the landmark model was trained on; there are no labelled clips of it here.
 - Whether steadying makes real positions more accurate. Only that it makes them steadier.
 - Steadying on a clip with replays, cuts or a moving camera.
 
@@ -100,7 +109,7 @@ The model is an Ultralytics YOLO model, so it carries the same AGPL-3.0 terms as
 
 ## Next steps that would make the metres trustworthy
 
-1. A labelled evaluation set with known positions, to measure real error.
-2. Use the clip camera to recover frames with too few landmarks for a fit of their own (two landmarks are enough once the position is known).
+1. A better or fine-tuned landmark or line model. The line check and the SoccerNet evaluation (`deploy/modal_gsr_eval.py`) can measure any candidate.
+2. Run `backfill_lines` on the stored clips so their warning shows.
 3. A lens distortion term.
 4. Measured pitch dimensions per venue.

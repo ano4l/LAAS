@@ -10,7 +10,9 @@ calibrated frame, not match totals:
 - Positions are averaged over about half a second and distance is summed in half-second
   hops. That keeps box jitter from being counted as running, but a standing player still
   collects a little distance from noise, and sharp turns inside a hop are cut short.
-- Accuracy has not been evaluated against measured positions or speeds.
+- On ten labelled SoccerNet clips from another league, distances came out about 1.6 times the
+  labelled ones and fast running about seven times too often, because the calibration was
+  several metres off (docs/testing/SOCCERNET_GSR_2026-11-15.md).
 """
 from __future__ import annotations
 
@@ -33,7 +35,7 @@ MAX_LISTED_PLAYERS = 60
 # Speed bands for half-second hops, by their lower bound in m/s. Half-second averages flatten short bursts,
 # so time in the upper bands is undercounted.
 SPEED_BANDS = (("walking", 0.), ("jogging", 2.), ("running", 4.), ("fast_running", 5.5))
-LIMITATIONS = ["Estimates from automatic pitch calibration on an assumed 105 x 68 m pitch. Not checked against measured positions, distances or speeds.",
+LIMITATIONS = ["Estimates from automatic pitch calibration on an assumed 105 x 68 m pitch. On ten labelled SoccerNet test clips from another league, distances came out about 1.6 times the labelled ones and time at fast-running speed several times too high.",
                "Only time a player was tracked in a calibrated frame counts. These are not match totals, and the camera does not see the whole pitch.",
                "A track is one unbroken stretch of one unreviewed tracker identity, not a verified player. One player can be several tracks.",
                "Positions are averaged over half a second and distance is summed in half-second hops. A standing player still collects a little distance from noise; sharp turns inside a hop are cut short.",
@@ -50,10 +52,10 @@ def _cell(x, y):
     return min(rows - 1, max(0, int(y // dy))), min(columns - 1, max(0, int(x // dx)))
 
 
-def _measure(samples, step):
+def _measure(samples, step, smooth_s=SMOOTH_S):
     """Distance (m), measured seconds, fastest hop (m/s), rejected hops and seconds per speed band for one unbroken stretch of (t, x, y)."""
     points = np.array([(x, y) for _, x, y in samples], dtype=float)
-    half = max(1, round(SMOOTH_S / step / 2))
+    half = max(1, round(smooth_s / step / 2))
     hop = max(1, round(HOP_S / step))
     bands = [0.] * len(SPEED_BANDS)
     if len(points) < 2 * half + 1 + hop:

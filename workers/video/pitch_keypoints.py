@@ -8,10 +8,16 @@ steadies calibrated frames that have calibrated neighbours, by smoothing the map
 about half a second; a frame whose smoothed mapping would fail its landmark checks keeps
 its own fit.
 
+The landmark checks only test whether the landmarks agree with each other, and a model can
+invent a consistent set. So calibrated frames are also checked against the image
+(pitch_lines.py): the pitch's markings drawn through the mapping should land on white lines.
+Nothing is rejected on this. A clip where most checked frames miss the lines carries a
+warning that its pitch positions are likely several metres off.
+
 The pitch size is not measured. Markings with fixed dimensions (penalty and goal areas,
 centre circle, penalty spots) are placed by the Laws of the Game; touchline and goal-line
-landmarks assume a 105 x 68 m pitch. Metres are therefore estimates, and accuracy has not
-been evaluated against measured positions.
+landmarks assume a 105 x 68 m pitch. Metres are therefore estimates. On labelled SoccerNet clips
+they were a median 7 m off (docs/testing/SOCCERNET_GSR_2026-11-15.md).
 """
 from __future__ import annotations
 
@@ -20,7 +26,7 @@ import math
 import cv2
 import numpy as np
 
-VERSION = "pitch-keypoints-3"
+VERSION = "pitch-keypoints-4"
 LENGTH_M, WIDTH_M = 105., 68.  # assumed, not measured
 MIN_CONFIDENCE = .5
 MIN_LANDMARKS = 5  # four fit exactly, so a fifth is the first that can disagree
@@ -31,9 +37,18 @@ MAX_ERROR_M = 1.5
 MIN_IMAGE_AREA = .015  # landmark hull as a share of the image
 MIN_SPAN_M = 9.  # landmarks must spread along both pitch axes
 MARGIN_M = 3.  # foot points this far outside the pitch outline are still drawn
+# Checked against the image (pitch_lines.py) and reported, never used to reject. Set on ten labelled SoccerNet clips, where the calibration
+# was a median 7 m off and at most 15% of a clip's frames reached this support, and a Bundesliga clip whose drawn lines sit on the real ones (median 0.93).
+LINE_TOLERANCE = .015  # a drawn marking point is on a line within this share of the image height (16 px at 1080p)
+MIN_LINE_SUPPORT = .75  # share of drawn marking points that must land on a white line
+MIN_CLIP_LINE_SHARE = .5  # below this share of checked frames matching, the clip's pitch figures carry a warning
+LINE_EVERY = 5  # in the worker, every Nth calibrated frame is checked: enough for the clip-level result at a fifth of the cost
+LINES_WARNING = ("In most frames of this clip the pitch lines drawn from the calibration miss the lines in the video (only {share}% of checked "
+                 "frames match), so pitch positions are likely several metres off. Treat the pitch map, heat maps, distances and speeds as rough.")
 LIMITATIONS = ["Each frame is calibrated from landmarks a model found. A calibrated frame with calibrated neighbours has its mapping smoothed over about half a second, and keeps the smoothed mapping only if it still passes the landmark checks; otherwise it keeps its own. A frame without a calibration gets no positions: nothing is carried into it or interpolated.",
                "The pitch is assumed to be 105 x 68 m. Fixed markings follow the Laws of the Game; a different pitch size shifts positions near the touchlines and goal lines.",
-               "Fit error measures agreement among the landmarks used, not the accuracy of player positions. It has not been checked against measured positions.",
+               "Fit error measures agreement among the landmarks used, not the accuracy of player positions. On ten labelled SoccerNet test clips from another league, positions were off by a median of about 8 m, including frames whose landmarks agreed to under half a metre.",
+               "Calibrated frames are checked against the video: the pitch's lines drawn through the mapping should land on white lines. A clip where most checked frames miss them is marked as likely several metres off; nothing is removed.",
                "Foot points are the bottom centre of a detection box; occlusion, jumps and lens distortion move them. Positions far from any landmark are less certain."]
 
 
@@ -160,9 +175,10 @@ def visible_area(record, width, height, step=2.5):
 class PitchKeypointModel:
     """Thin wrapper around the pose model: one frame in, one calibration record out."""
 
-    def __init__(self, weights, device):
+    def __init__(self, weights, device, line_every=None):
         from ultralytics import YOLO
         self.model, self.device, self.name = YOLO(str(weights)), device, getattr(weights, "name", str(weights))
+        self.line_every, self.calibrated = line_every or LINE_EVERY, 0
         if getattr(self.model, "task", None) != "pose" or list(getattr(self.model.model, "kpt_shape", [])[:1]) != [len(landmarks())]:
             raise ValueError("The pitch model must be a pose model with 32 pitch landmarks")
 
@@ -172,7 +188,35 @@ class PitchKeypointModel:
         if result.keypoints is None or not len(result.keypoints) or result.keypoints.conf is None:
             return dict(status="invalid", reason="No pitch found in the frame", landmarks_seen=0)
         best = int(result.boxes.conf.argmax()) if len(result.boxes) > 1 else 0
-        return fit(result.keypoints.xy[best].cpu().numpy(), result.keypoints.conf[best].cpu().numpy(), width, height)
+        record = fit(result.keypoints.xy[best].cpu().numpy(), result.keypoints.conf[best].cpu().numpy(), width, height)
+        if record["status"] == "calibrated":
+            self.calibrated += 1
+            if (self.calibrated - 1) % self.line_every == 0:
+                record = check_lines(record, frame)
+        return record
+
+
+def check_lines(record, frame):
+    """Measure how well a calibrated record's mapping, drawn into `frame`, lands on the white lines. It never changes the status."""
+    if record.get("status") != "calibrated":
+        return record
+    from workers.video import pitch_lines
+    support = pitch_lines.support(frame, record["matrix"], tolerance=LINE_TOLERANCE)
+    return dict(record, line_support=support["share"], line_markings=[support["markings_on_lines"], support["markings_seen"]])
+
+
+def lines_summary(frames):
+    """Clip-level result of the line check over the calibrated frames that were checked. Changes nothing."""
+    out = dict(tolerance=LINE_TOLERANCE, min_line_support=MIN_LINE_SUPPORT, min_clip_share=MIN_CLIP_LINE_SHARE)
+    checked = [record for record in frames.values() if record.get("status") == "calibrated" and "line_support" in record]
+    if not checked:
+        return dict(out, status="not_run", warning=None,
+                    reason="This calibration was made before frames were checked against the video's lines.")
+    matching = sum(record["line_support"] is not None and record["line_support"] >= MIN_LINE_SUPPORT for record in checked)
+    share = matching / len(checked)
+    mismatch = share < MIN_CLIP_LINE_SHARE
+    return dict(out, status="lines_do_not_match" if mismatch else "lines_match", frames_checked=len(checked), frames_matching=matching,
+                share_matching=round(share, 3), warning=LINES_WARNING.format(share=round(100 * share)) if mismatch else None)
 
 
 def document(frames, model_name, model_sha256=None, stride=1, video=None):
@@ -208,7 +252,7 @@ def document(frames, model_name, model_sha256=None, stride=1, video=None):
                                 min_landmark_span_m=MIN_SPAN_M, outside_pitch_margin_m=MARGIN_M),
                 summary=dict(frames_tried=len(frames), frames_calibrated=len(calibrated),
                              mean_error_m=round(float(np.mean([r["mean_error_m"] for r in calibrated])), 3) if calibrated else None,
-                             rejected=reasons, steadying=camera),
+                             rejected=reasons, steadying=camera, line_check=lines_summary(frames)),
                 limitations=LIMITATIONS,
                 frames={str(index): record for index, record in sorted(frames.items())})
 
@@ -230,7 +274,7 @@ def upgrade(doc, video):
 
 SUMMARY_KEYS = ("schema_version", "method", "model", "model_sha256", "frame_stride", "assumed_pitch", "summary")
 CALIBRATION_WARNING = ("Pitch positions in the shape view are estimates from automatic per-frame calibration that assumes a 105 x 68 m pitch. "
-                       "They are unreviewed, not checked against measured positions, and absent for frames that fail the calibration checks.")
+                       "They are unreviewed, were off by a median of about 8 m on labelled test clips from another league, and are absent for frames that fail the calibration checks.")
 
 
 def _write_json(path, value):
@@ -257,8 +301,6 @@ def calibrate_run(video, run_directory, weights, device="cpu", stride=1, progres
     import hashlib
     import json
     from pathlib import Path
-    from workers.video.insights import from_tracking
-    from workers.video.sequence_context import load_context
 
     video, run_directory, weights = Path(video), Path(run_directory), Path(weights)
     manifest = json.loads((run_directory / "manifest.json").read_text(encoding="utf-8"))
@@ -287,13 +329,59 @@ def calibrate_run(video, run_directory, weights, device="cpu", stride=1, progres
     with weights.open("rb") as stream:
         calibration = document(frames, weights.name, hashlib.file_digest(stream, "sha256").hexdigest(), frame_stride * stride,
                                (metadata["width"], metadata["height"], metadata["fps"]))
+    return _store(run_directory, manifest, calibration)
+
+
+def _store(run_directory, manifest, calibration):
+    """Write a calibration document and recompute the insights that use it."""
+    import json
+    from workers.video.insights import from_tracking
+    from workers.video.sequence_context import load_context
     _write_json(run_directory / "pitch-calibration.json", calibration)
+    summary = manifest["detection_summary"]
     summary["pitch_calibration"] = {key: calibration[key] for key in SUMMARY_KEYS}
     if CALIBRATION_WARNING not in manifest.setdefault("warnings", []):
         manifest["warnings"].append(CALIBRATION_WARNING)
     context = load_context(run_directory / "sequence-context.json", manifest)
+    frames = {int(index): record for index, record in calibration["frames"].items()}
     manifest.setdefault("metrics", {})["video_insights"] = from_tracking(
-        json.loads((run_directory / "tracking.json").read_text(encoding="utf-8")), metadata, summary, context, frames)
+        json.loads((run_directory / "tracking.json").read_text(encoding="utf-8")), manifest["metadata"], summary, context, frames)
     _write_json(run_directory / "metrics.json", manifest["metrics"])
     _write_json(run_directory / "manifest.json", manifest)
     return manifest
+
+
+def check_run_lines(video, run_directory, every=None):
+    """Check a stored run's calibration against its video's lines, without the landmark model, and store the result.
+
+    Every `every`th calibrated frame (LINE_EVERY by default) is measured with the mapping it
+    already has; nothing is rejected or refitted. The document is brought up to this version
+    and the insights that use it are recomputed. Returns the line-check summary.
+    """
+    import hashlib
+    import json
+    from pathlib import Path
+    video, run_directory = Path(video), Path(run_directory)
+    manifest = json.loads((run_directory / "manifest.json").read_text(encoding="utf-8"))
+    metadata = manifest["metadata"]
+    with video.open("rb") as source:
+        if hashlib.file_digest(source, "sha256").hexdigest() != metadata.get("sha256"):
+            raise ValueError("This video is not the run's source: SHA-256 differs")
+    doc = json.loads((run_directory / "pitch-calibration.json").read_text(encoding="utf-8"))
+    frames = {int(index): record for index, record in doc["frames"].items()}
+    wanted = set(sorted(index for index, record in frames.items() if record.get("status") == "calibrated")[::every or LINE_EVERY])
+    capture, index = cv2.VideoCapture(str(video)), 0
+    try:
+        while wanted and index <= max(wanted):
+            ok, frame = capture.read()
+            if not ok:
+                break
+            if index in wanted:
+                frames[index] = check_lines(frames[index], frame)
+            index += 1
+    finally:
+        capture.release()
+    calibration = document(frames, doc.get("model"), doc.get("model_sha256"), doc.get("frame_stride", 1),
+                           (metadata["width"], metadata["height"], metadata["fps"]))
+    _store(run_directory, manifest, calibration)
+    return calibration["summary"]["line_check"]

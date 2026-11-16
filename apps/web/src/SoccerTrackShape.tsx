@@ -9,7 +9,8 @@ import { DataTable, Disclosure, EmptyState, EvidenceChip, Field, Pager, Panel, S
 export type ShapeEllipse = { centroid_x_pct: number; centroid_y_pct: number; major_radius_px: number; minor_radius_px: number; angle_degrees: number; area_image_pct: number; rms_spread_px: number; point_count: number };
 /** Estimated positions on an assumed pitch, present only when that frame passed automatic calibration. */
 type PitchSnapshot = { players: { track_id: string; x_m: number; y_m: number }[]; players_not_placed: number; landmarks_used: number; fit_error_m: number; stabilised?: boolean; visible_area_m: [number, number][]; length_extent_m: number | null; width_extent_m: number | null; hull_area_m2: number | null };
-type PitchStatus = { status: string; reason?: string | null; assumed_pitch?: { length_m: number; width_m: number; measured: boolean }; frames_tried?: number; frames_calibrated?: number; frames_stabilised?: number; limitations?: string[] };
+export type LineCheck = { status: "not_run" | "lines_match" | "lines_do_not_match"; warning: string | null; share_matching?: number; frames_checked?: number; frames_matching?: number };
+type PitchStatus = { status: string; reason?: string | null; line_check?: LineCheck; assumed_pitch?: { length_m: number; width_m: number; measured: boolean }; frames_tried?: number; frames_calibrated?: number; frames_stabilised?: number; limitations?: string[] };
 export type MotionTrack = { track_id: string; measured_seconds: number; distance_m: number; mean_speed_m_s: number; fastest_hop_m_s: number; rejected_hops: number };
 /** One tracked identity measured on its own, in a kit group or not. `heat_cells` lists [row, column, seconds] for the grid cells it was placed in. */
 export type MotionPlayer = MotionTrack & { scene_id: number; kit: string | null; placed_seconds: number; heat_cells: [number, number, number][]; speed_band_seconds?: Record<string, number> };
@@ -83,6 +84,7 @@ export function SoccerTrackShape({ data, imageWidth, imageHeight, duration, clea
         </Field>
       )}
     >
+      {pitchAvailable && data?.pitch?.line_check?.warning && <p className="note note--boxed" role="note"><strong>The pitch map does not match this video’s lines. </strong>{data.pitch.line_check.warning}</p>}
       <p className="note note--boxed" title={data?.formation.reason ? `Analysis wording: ${data.formation.reason}` : undefined}><strong>Named tactical formation unavailable. </strong>{FORMATION_PLAIN}</p>
 
       {!data ? <EmptyState title="No shape measurements for this clip">Collective shape was not calculated in this older analysis. No player positions or formation are assumed.</EmptyState>
@@ -176,7 +178,7 @@ export function SoccerTrackShape({ data, imageWidth, imageHeight, duration, clea
                 {pitch && <p className="note">
                   <strong>Estimate, not a measurement. </strong>
                   Mapped from {pitch.landmarks_used} pitch markings found in the frame at {secs(snapshot!.timestamp_seconds, 2)}, which {pitch.stabilised ? "the steadied mapping matches" : "agree with each other"} to about {num(pitch.fit_error_m, 2)} m.
-                  The pitch is assumed to be {pitchLength} × {pitchWidth} m, and positions have not been checked against measured ones.
+                  The pitch is assumed to be {pitchLength} × {pitchWidth} m. On ten labelled test clips from another league, positions were off by a median of about 8 m.
                   {notPlaced > 0 ? ` ${notPlaced} ${notPlaced === 1 ? "player" : "players"} seen in the frame did not land on the pitch and ${notPlaced === 1 ? "is" : "are"} not drawn.` : ""}
                 </p>}
               </> : <>

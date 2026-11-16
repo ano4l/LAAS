@@ -204,7 +204,7 @@ def run_real_analysis(input_video: Path, output_root: Path, progress=None) -> di
         warnings.append("linked_track_id joins track fragments offline using timing, image position and kit colour. Links are unreviewed and can join different players; track_id keeps the original tracker output. Measurements and insights use the linked identities; the annotated video shows original tracker IDs.")
         warnings.append("Ball candidates pass geometry filtering; ball_selected marks the most consistent observed path chosen over the whole clip; it is provisional, not a confirmed trajectory. Missing positions remain missing; none are interpolated.")
         if pitch_model:
-            warnings.append("Pitch positions in the shape view are estimates from automatic per-frame calibration that assumes a 105 x 68 m pitch. They are unreviewed, not checked against measured positions, and absent for frames that fail the calibration checks.")
+            warnings.append("Pitch positions in the shape view are estimates from automatic per-frame calibration that assumes a 105 x 68 m pitch. They are unreviewed, were off by a median of about 8 m on labelled test clips from another league, and are absent for frames that fail the calibration checks.")
         if stride > 1:
             warnings.append("Only sampled frames have detection overlays. Unsampled frames are not analysed or interpolated.")
         if options["tile_size"]:

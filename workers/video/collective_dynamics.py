@@ -22,7 +22,8 @@ def pitch_status(pitch):
     return dict(status='estimated' if calibrated else 'unavailable',reason=None if calibrated else 'No analysed frame passed the pitch calibration checks.',
         review_status='unreviewed',accuracy_evaluated=False,method='landmark_homography_smoothed' if stabilised else 'per_frame_landmark_homography',
         assumed_pitch=dict(length_m=pk.LENGTH_M,width_m=pk.WIDTH_M,measured=False),outside_pitch_margin_m=pk.MARGIN_M,
-        frames_tried=len(pitch),frames_calibrated=calibrated,frames_stabilised=stabilised,limitations=pk.LIMITATIONS)
+        frames_tried=len(pitch),frames_calibrated=calibrated,frames_stabilised=stabilised,limitations=pk.LIMITATIONS,
+        line_check=pk.lines_summary(pitch))
 
 
 def ellipse(points,width,height):

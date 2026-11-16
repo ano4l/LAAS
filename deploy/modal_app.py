@@ -130,3 +130,43 @@ def backfill_pitch(request_ids: str = "", force: bool = False):
             outcomes[request_id] = f"failed: {type(error).__name__}: {error}"
         print(request_id[:8], outcomes[request_id], flush=True)
     return outcomes
+
+
+# No GPU: the check draws the stored mappings into the stored video; the landmark model is not used.
+@app.function(image=image, cpu=2, memory=4096, volumes={"/jobs": volume}, min_containers=0, max_containers=1,
+              scaledown_window=2, timeout=1800, retries=0)
+def backfill_lines(request_ids: str = ""):
+    """Check finished runs' pitch calibration against their video's lines and store the result.
+
+    Operator-only, like backfill_pitch: `modal run deploy/modal_app.py::backfill_lines`.
+    Nothing is rejected or refitted; a clip whose drawn lines mostly miss the video's lines
+    gets a warning on its pitch figures. Runs without a stored calibration are skipped.
+    """
+    import json
+    from workers.video.modal_policy import validate_request
+    from workers.video.pitch_keypoints import check_run_lines
+
+    volume.reload()
+    jobs = Path("/jobs/web-jobs")
+    outcomes = {}
+    for request_id in [value.strip() for value in request_ids.split(",") if value.strip()] or sorted(path.stem for path in jobs.glob("*.json")):
+        validate_request(request_id)
+        job_path = jobs / f"{request_id}.json"
+        try:
+            job = json.loads(job_path.read_text(encoding="utf-8"))
+            source = Path("/jobs/requests") / request_id / "source.mp4"
+            run_dir = source.parent / "outputs" / str(job.get("run_id"))
+            if job.get("status") != "complete" or not source.is_file() or not (run_dir / "pitch-calibration.json").is_file():
+                outcomes[request_id] = "skipped: no finished run with stored video and calibration"
+                continue
+            outcomes[request_id] = check_run_lines(source, run_dir)
+            volume.commit()
+            volume.reload()  # the web gateway may have saved the job while this ran
+            job = json.loads(job_path.read_text(encoding="utf-8"))
+            job["result"] = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+            job_path.write_text(json.dumps(job), encoding="utf-8")
+            volume.commit()
+        except Exception as error:  # one bad run must not stop the rest
+            outcomes[request_id] = f"failed: {type(error).__name__}: {error}"
+        print(request_id[:8], outcomes[request_id], flush=True)
+    return outcomes

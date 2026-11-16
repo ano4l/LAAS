@@ -12,7 +12,7 @@ type NamedPlayer = { key: string; name: string; number: string; tracks: string[]
 type Labels = { schema_version: string; run_id: string; source_sha256: string | null; revision: number; players: { id: string; name: string; number: string | null; tracks: string[] }[]; overlap_checked: boolean | null };
 type Identity = { track_id: string; object_type: string; team: string | null; first_seen_ms: number; last_seen_ms: number; fragments: number };
 /** Two identities that could be one player, for a person to check. Never applied automatically. */
-type Suggestion = { from_track: string; to_track: string; gap_seconds: number; from_last_seen_seconds: number; to_first_seen_seconds: number; same_kit: boolean | null; basis: "pitch" | "image"; distance_m: number | null; distance_heights: number | null; rivals: number };
+type Suggestion = { from_track: string; to_track: string; gap_seconds: number; from_last_seen_seconds: number; to_first_seen_seconds: number; same_kit: boolean | null; basis: "pitch" | "image"; distance_m: number | null; distance_heights: number | null; rivals: number; fit?: number; close_fit?: boolean };
 /** A shirt number an experimental text reader saw repeatedly on one identity. A question for a person, not a recognition. */
 type NumberProposal = { track_id: string; proposed_number: string; agreement: number; confident_reads: number; crops_read: number };
 type Suggestions = { suggestions: Suggestion[]; suggestions_total: number; appearances?: Record<string, [number, number][]>; reason?: string; shirt_numbers?: { reader: string | null; proposals: NumberProposal[] } };
@@ -41,6 +41,7 @@ export function PlayerProfiles({ result, api, authHeaders, selected, onSelect }:
   const [confirmed, setConfirmed] = useState(false); const [reload, setReload] = useState(0);
   const [newName, setNewName] = useState(""); const [newNumber, setNewNumber] = useState("");
   const [suggested, setSuggested] = useState<Suggestions | null>(null);
+  const [looseFor, setLooseFor] = useState<string | null>(null); // the player whose looser suggestions are shown
   const [roster, setRoster] = useState<RosterEntry[]>([]);
   const [compare, setCompare] = useState("");
 
@@ -55,6 +56,8 @@ export function PlayerProfiles({ result, api, authHeaders, selected, onSelect }:
   const measured = useMemo(() => new Map(result.metrics.video_measurements?.tracks.map(track => [track.track_id, track]) ?? []), [result]);
   const motionData = result.metrics.video_insights?.collective_dynamics?.pitch_motion;
   const motion = motionData?.status === "estimated" ? motionData : undefined;
+  // Set when most checked frames' pitch lines, drawn from the calibration, miss the lines in the video.
+  const lineWarning = motion ? result.metrics.video_insights?.collective_dynamics?.pitch?.line_check?.warning ?? null : null;
   const motionTracks = useMemo(() => new Map<string, MotionPlayer>(motion?.players?.map(track => [track.track_id, track] as [string, MotionPlayer]) ?? []), [motion]);
   const spells = result.metrics.video_insights?.control.spells ?? [];
   const candidates = result.metrics.video_insights?.candidates ?? [];
@@ -143,6 +146,12 @@ export function PlayerProfiles({ result, api, authHeaders, selected, onSelect }:
   const spans = trackIds.flatMap(id => suggested?.appearances?.[id] ?? (byId.get(id) ? [[byId.get(id)!.first_seen_ms / 1000, byId.get(id)!.last_seen_ms / 1000] as [number, number]] : []));
   const share = (seconds: number) => `${Math.max(0, Math.min(100, 100 * seconds / Math.max(duration, .001)))}%`;
   const possible = (suggested?.suggestions ?? []).filter(row => trackIds.includes(row.from_track) !== trackIds.includes(row.to_track));
+  // Close fits first and on their own: on labelled test clips they were right about half the time, the rest about one in five.
+  // A response from before close fits were marked lists everything, as it did then.
+  const graded = possible.some(row => row.close_fit !== undefined);
+  const closeFits = graded ? possible.filter(row => row.close_fit) : possible;
+  const looseFits = graded ? possible.filter(row => !row.close_fit) : [];
+  const listed = looseFor === current ? [...closeFits, ...looseFits] : closeFits;
   const other = compare && byId.has(compare) && !trackIds.includes(compare) ? summarise(tracksOf(compare)) : null;
   const options = <>
     {players.some(row => row.tracks.length) && <optgroup label="Named players">
@@ -209,7 +218,7 @@ export function PlayerProfiles({ result, api, authHeaders, selected, onSelect }:
 
         {readNumbers.length > 0 && (
           <div className="note note--boxed">
-            <p>An experimental text reader saw a number on this player’s shirt. It was trained on general text, not shirts, and has not been checked here. Watch the footage before using it.</p>
+            <p>An experimental text reader saw a number on this player’s shirt. It was trained on general text, not shirts. On ten labelled test clips from another league, 27 of 29 two-digit proposals that could be checked were right. Watch the footage before using it.</p>
             <ul className="itemlist">
               {readNumbers.map(row => (
                 <li key={row.track_id}>
@@ -225,6 +234,7 @@ export function PlayerProfiles({ result, api, authHeaders, selected, onSelect }:
           </div>
         )}
 
+        {lineWarning && moved.length > 0 && <p className="note note--boxed" role="note"><strong>Distance, speed and heat map are rough here. </strong>{lineWarning}</p>}
         <div className="tiles tiles--four tiles--compact">
           <StatTile label="On screen" value={own.observedSeconds == null ? DASH : num(own.observedSeconds)} unit="s" evidence={own.observedSeconds == null ? "unknown" : "seen"}
             title="Technical name: observed seconds, summed over the selected identities"
@@ -358,9 +368,13 @@ export function PlayerProfiles({ result, api, authHeaders, selected, onSelect }:
           <div className="stack stack--sm">
             <h4>Possibly the same player</h4>
             {possible.length ? <>
-              <p className="note">The tracker may have split this player. Each line is a question, not a finding: watch the moment, and join the two only if you can see it is the same person. Nothing is joined automatically.</p>
+              <p className="note">
+                The tracker may have split this player. Each line is a question, not a finding: watch the moment, and join the two only if you can see it is the same person. Nothing is joined automatically.
+                {graded && " Close fits come first. On ten labelled test clips from another league, about half of the close fits that could be checked were the same player, and about one in five of all suggestions."}
+              </p>
+              {!listed.length && <p className="note">No close fit for this player.</p>}
               <ul className="itemlist">
-                {possible.slice(0, 8).map(row => {
+                {listed.slice(0, 8).map(row => {
                   const mine = trackIds.includes(row.from_track) ? row.from_track : row.to_track, theirs = mine === row.from_track ? row.to_track : row.from_track;
                   const theirOwner = owner(theirs), canJoin = Boolean(player) !== Boolean(theirOwner);
                   const where = row.basis === "pitch" ? `about ${num(row.distance_m)} m away on the pitch map` : `about ${num(row.distance_heights)} player heights away in the image`;
@@ -380,7 +394,10 @@ export function PlayerProfiles({ result, api, authHeaders, selected, onSelect }:
                   );
                 })}
               </ul>
-              {possible.length > 8 && <p className="note">Showing the 8 clearest of {possible.length}.</p>}
+              {listed.length > 8 && <p className="note">Showing the 8 closest of {listed.length}.</p>}
+              {looseFits.length > 0 && (looseFor === current
+                ? <button type="button" className="btn btn--secondary btn--sm" onClick={() => setLooseFor(null)}>Hide the {looseFits.length} looser {looseFits.length === 1 ? "suggestion" : "suggestions"}</button>
+                : <button type="button" className="btn btn--secondary btn--sm" onClick={() => setLooseFor(current)}>Show {looseFits.length} looser {looseFits.length === 1 ? "suggestion" : "suggestions"} (mostly wrong on test clips)</button>)}
             </> : <p className="note">{suggested.reason ?? "No other identity starts or ends close enough in time and place to be suggested."}</p>}
           </div>
         )}
@@ -439,7 +456,7 @@ export function PlayerProfiles({ result, api, authHeaders, selected, onSelect }:
 
         <Disclosure summary="How this is measured">
           <p>A profile adds up the tracked identities you selected. Identities are joined automatically from tracker fragments and are unreviewed, so one identity can contain two players and one player can be several identities. Naming does not change any automatic figure; it only groups identities. Saving is refused when two identities given to one player are on screen in the same analysed frames.</p>
-          <p>Distance, speed, speed bands and the heat map are estimates from automatic pitch calibration on an assumed 105 x 68 m pitch. They count only time tracked in a calibrated frame and have not been checked against measured positions or speeds. They are not match totals.</p>
+          <p>Distance, speed, speed bands and the heat map are estimates from automatic pitch calibration on an assumed 105 x 68 m pitch. They count only time tracked in a calibrated frame and are not match totals. On ten labelled test clips from another league, positions were off by a median of about 8 m, distances came out about 1.6 times the labelled ones, and time at fast-running speed was several times too high, so treat them as rough.</p>
           <p>“Possibly the same player” lists identities where one ends and another begins soon after, close enough for one person to have covered the ground, and never two that are on screen together. It uses timing and position only, so team-mates crossing paths can be suggested wrongly.</p>
         </Disclosure>
       </div>
