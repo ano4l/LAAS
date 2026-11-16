@@ -40,7 +40,14 @@ def run_analysis(input_video: Path, output_root: Path, progress: Progress | None
         provider = os.getenv("ANALYSIS_COMPUTE", "local")
         if provider == "modal":
             from workers.video.modal_client import run_modal_analysis
-            return run_modal_analysis(input_video, output_root, progress)
+            from workers.video.compute import fallback_enabled, run_local_fallback
+            try:
+                return run_modal_analysis(input_video, output_root, progress)
+            except Exception as exc:
+                # A cloud failure stays a failure unless the operator opted in with ANALYSIS_FALLBACK=local.
+                if not fallback_enabled():
+                    raise
+                return run_local_fallback(input_video, output_root, progress, exc)
         if provider != "local":
             raise ValueError("ANALYSIS_COMPUTE must be local or modal")
         from workers.video.real_analysis import run_real_analysis

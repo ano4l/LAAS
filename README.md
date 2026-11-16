@@ -45,7 +45,7 @@ Copy `.env.example` to `.env` if customization is needed. The API loads the root
 
 - `YOLO_MODEL_PATH`: trusted football detector weights. Defaults to `models/football.pt`, then the already-present football weights at `references/Soccer-Analytics/models/best.pt`, then generic `references/FootBall-Analytics-MVP/yolo11l.pt`. Reference folders and weights are not bundled in Git or Docker. A server must provision weights separately.
 - `YOLO_DEVICE`: `cpu`, or `0` for a CUDA-enabled PyTorch installation and compatible NVIDIA driver. If omitted, the worker selects CUDA only when PyTorch confirms it is available.
-- `ANALYSIS_PROFILE`: defaults to `accurate`: every source frame, 1280-pixel detector input. `preview` uses approximately 5 fps and 640 pixels. Accurate mode is substantially slower on CPU and is not an accuracy guarantee.
+- `ANALYSIS_PROFILE`: defaults to `accurate`: every source frame, 1280-pixel detector input. `balanced` uses about 12 fps and 960 pixels and is the CPU fallback setting. `preview` uses approximately 5 fps and 640 pixels. Accurate mode is substantially slower on CPU and is not an accuracy guarantee.
 - `ANALYSIS_FPS`: optional maximum inference sampling rate. Processing covers the full duration; unsampled frames have no boxes painted on them.
 - `YOLO_IMAGE_SIZE`: optional inference resolution override (multiple of 32).
 - `BALL_TILE_SIZE`: experimental overlapping ball crops, e.g. `640`; default `0` disables them. Full-frame and crop candidates are deduplicated. Validate precision and recall before enabling on real jobs.

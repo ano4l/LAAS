@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<Task version="1.3" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>Start the private LAAS dashboard and video worker (Modal GPU with CPU fallback) after Windows boots.</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <BootTrigger><Enabled>true</Enabled></BootTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="LAAS">
+      <UserId>S-1-5-19</UserId>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <RestartOnFailure><Interval>PT1M</Interval><Count>3</Count></RestartOnFailure>
+  </Settings>
+  <Actions Context="LAAS">
+    <Exec>
+      <Command>C:\Program Files\LAAS Football Analytics\python\python.exe</Command>
+      <Arguments>"C:\Program Files\LAAS Football Analytics\Start-LAAS.py"</Arguments>
+      <WorkingDirectory>C:\Program Files\LAAS Football Analytics</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>

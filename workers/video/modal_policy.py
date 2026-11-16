@@ -10,6 +10,9 @@ MAX_SECONDS = 120
 MAX_MONTHLY_ATTEMPTS = 20
 MAX_DAILY_ATTEMPTS = 5
 ARTIFACTS = ("manifest.json", "tracking.json", "metrics.json", "report.json", "annotated.mp4", "encoder.log")
+# Written only when the run produced them (pitch model present, camera motion measured, tracks linked).
+# Without them the local server has no pitch map and no merge suggestions for a cloud run.
+OPTIONAL_ARTIFACTS = ("pitch-calibration.json", "track-links.json", "camera-motion.json")
 
 
 def validate_request(request_id, profile="accurate", tile_size=0):

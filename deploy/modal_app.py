@@ -47,7 +47,7 @@ def analyze(request_id: str, profile: str = "accurate", tile_size: int = 0):
     import hashlib
     import json
     import torch
-    from workers.video.modal_policy import ARTIFACTS, reserve_attempt, validate_request, validate_video
+    from workers.video.modal_policy import ARTIFACTS, OPTIONAL_ARTIFACTS, reserve_attempt, validate_request, validate_video
     from workers.video.real_analysis import run_real_analysis, video_metadata
 
     validate_request(request_id, profile, tile_size)
@@ -70,7 +70,7 @@ def analyze(request_id: str, profile: str = "accurate", tile_size: int = 0):
     run_dir = source.parent / "outputs" / result["run_id"]
     (run_dir / "manifest.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
     hashes = {}
-    for name in ARTIFACTS:
+    for name in (*ARTIFACTS, *(name for name in OPTIONAL_ARTIFACTS if (run_dir / name).is_file())):
         with (run_dir / name).open("rb") as stream:
             hashes[name] = hashlib.file_digest(stream, "sha256").hexdigest()
     volume.commit()

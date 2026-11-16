@@ -5,9 +5,35 @@ import os
 from pathlib import Path
 import shutil
 import tempfile
+import time
 from uuid import uuid4
 
-from workers.video.modal_policy import APP_NAME, VOLUME_NAME, ARTIFACTS, validate_request, validate_video
+from workers.video.modal_policy import APP_NAME, VOLUME_NAME, ARTIFACTS, OPTIONAL_ARTIFACTS, validate_request, validate_video
+
+# The GPU function may run for 600 s after up to 180 s of start-up; a little slack on top for the queue.
+WAIT_SECONDS = 900
+POLL_SECONDS = 5
+
+
+def wait_for_call(call, progress=None, wait_seconds=None, poll_seconds=None):
+    """Poll a spawned call so the server thread is never parked inside one long request."""
+    wait_seconds = WAIT_SECONDS if wait_seconds is None else wait_seconds
+    poll_seconds = POLL_SECONDS if poll_seconds is None else poll_seconds
+    started = time.monotonic()
+    while True:
+        try:
+            return call.get(timeout=poll_seconds)
+        except TimeoutError:
+            waited = time.monotonic() - started
+            if waited >= wait_seconds:
+                try:
+                    call.cancel()
+                except Exception:
+                    pass
+                raise TimeoutError(f"Modal did not finish within {wait_seconds} seconds; the cloud job was cancelled")
+            if progress:
+                # Honest about what is known: time waited, not a guess at remote progress.
+                progress(f"Queued or processing on Modal GPU · {int(waited)} s", min(0.9, 0.2 + 0.7 * waited / wait_seconds))
 
 
 def run_modal_analysis(input_video: Path, output_root: Path, progress=None):
@@ -32,7 +58,7 @@ def run_modal_analysis(input_video: Path, output_root: Path, progress=None):
         if progress:
             progress("Queued or processing on Modal GPU · first run may build the image", 0.2)
         remote = modal.Function.from_name(APP_NAME, "analyze")
-        response = remote.remote(request_id, profile, tile_size)
+        response = wait_for_call(remote.spawn(request_id, profile, tile_size), progress)
         run_id = response["run_id"]
         validate_request(run_id)
         output_root.mkdir(parents=True, exist_ok=True)
@@ -45,7 +71,8 @@ def run_modal_analysis(input_video: Path, output_root: Path, progress=None):
         with tempfile.TemporaryDirectory(prefix="modal-import-", dir=output_root) as directory:
             staging = Path(directory) / run_id
             staging.mkdir()
-            for name in ARTIFACTS:
+            # An older deployment returns no hashes for the optional files; import what it produced.
+            for name in (*ARTIFACTS, *(name for name in OPTIONAL_ARTIFACTS if name in response["sha256"])):
                 digest = hashlib.sha256()
                 with (staging / name).open("wb") as stream:
                     for chunk in volume.read_file(f"{prefix}/outputs/{run_id}/{name}"):
