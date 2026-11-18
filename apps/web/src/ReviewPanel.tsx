@@ -15,10 +15,16 @@ type Approval = "draft" | "approved";
 type Annotation = { id: string; timestamp_seconds: number; type: EventType; team: Team; player: string | null; outcome: string; review_status: Approval; notes: string };
 type Possession = { id: string; start_seconds: number; end_seconds: number; team: Team | "unknown"; review_status: Approval };
 type TeamSummary = { name: string; event_count: number; passes: { recorded: number; completed: number; known_outcomes: number; outcome_coverage_pct: number | null; completion_pct: number | null };
-  shots: { recorded: number; on_target: number; goals: number }; tackles: { recorded: number; won: number }; interceptions: number;
-  dribbles: { recorded: number; successful: number }; duels: { recorded: number; won: number } };
-type ReviewSummary = { scope: string; approved_events: number; draft_events: number; reviewed_seconds: number; reviewed_video_pct: number | null;
-  teams: { home: TeamSummary | null; away: TeamSummary | null }; players: { team: Team; player: string; event_count: number; counts: Record<string, number> }[];
+  // Fields marked optional were added in summary version 2; a review served by an older server lacks them.
+  shots: { recorded: number; on_target: number; goals: number; off_target?: number; blocked?: number; known_outcomes?: number; on_target_pct?: number | null; conversion_pct?: number | null };
+  tackles: { recorded: number; won: number; lost?: number; known_outcomes?: number; win_pct?: number | null }; interceptions: number;
+  dribbles: { recorded: number; successful: number; unsuccessful?: number; known_outcomes?: number; success_pct?: number | null };
+  duels: { recorded: number; won: number; lost?: number; known_outcomes?: number; win_pct?: number | null };
+  turnovers?: { conceded: number; incomplete_passes: number; unsuccessful_dribbles: number; won: number; tackles_won: number } };
+export type { TeamSummary };
+type ReviewSummary = { scope: string; summary_version?: number; approved_events: number; draft_events: number; reviewed_seconds: number; reviewed_video_pct: number | null;
+  definitions?: Record<string, string>;
+  teams: { home: TeamSummary | null; away: TeamSummary | null }; players: { team: Team; player: string; event_count: number; counts: Record<string, number>; outcomes?: Record<string, Record<string, number>> }[];
   possession: { home_seconds: number; away_seconds: number; unknown_seconds: number; home_share_pct: number | null; away_share_pct: number | null; known_coverage_pct: number | null } };
 export type Review = { schema_version: string; run_id: string; revision: number; teams: { home: string; away: string }; coverage: [number, number][];
   events: Annotation[]; possession_intervals: Possession[]; summary: ReviewSummary };
@@ -28,6 +34,13 @@ type PossessionForm = CoverageForm & { team: Possession["team"]; approved: boole
 type ReviewDraft = { review: Review; saved: Review; event: Annotation; editing: boolean; eventDirty: boolean; coverage: CoverageForm; interval: PossessionForm };
 // Kept in this tab's memory, scoped to API and run. Run navigation must not discard annotation work.
 const reviewDrafts = new Map<string, ReviewDraft>();
+// A candidate a person chose to draft elsewhere in the app. It only fills in the form: applying, saving and approving stay with the reviewer.
+const PROPOSAL_EVENT = "laas:review-proposal";
+let proposal: { runId: string; timestamp_seconds: number; type: string; notes: string } | null = null;
+export function proposeReviewEvent(runId: string, draft: { timestamp_seconds: number; type: string; notes: string }) {
+  proposal = { runId, ...draft };
+  window.dispatchEvent(new Event(PROPOSAL_EVENT));
+}
 const freshEvent = (): Annotation => ({ id: crypto.randomUUID(), timestamp_seconds: 0, type: "pass", team: "home", player: null, outcome: "unknown", review_status: "draft", notes: "" });
 const count = (value: number | null) => value === null ? "Unknown" : value.toLocaleString(undefined, { maximumFractionDigits: 2 });
 const payload = (review: Review) => ({ revision: review.revision, teams: review.teams, coverage: review.coverage, events: review.events, possession_intervals: review.possession_intervals });
@@ -64,6 +77,21 @@ export function ReviewPanel({ runId, duration, api, authHeaders, onSaved, onUnsa
   const eventMatches = review?.events.filter(item => (statusFilter === "all" || item.review_status === statusFilter) && `${item.type} ${item.outcome} ${item.player ?? ""} ${review.teams[item.team]} ${item.notes}`.toLowerCase().includes(eventSearch.trim().toLowerCase())) ?? [];
   const lastEventPage = Math.max(0, Math.ceil(eventMatches.length / 8) - 1);
   const currentEventPage = Math.min(eventPage, lastEventPage);
+  const [proposed, setProposed] = useState(0);
+  useEffect(() => {
+    const notice = () => setProposed(value => value + 1);
+    window.addEventListener(PROPOSAL_EVENT, notice);
+    return () => window.removeEventListener(PROPOSAL_EVENT, notice);
+  }, []);
+  useEffect(() => {
+    if (!review || !proposal || proposal.runId !== runId) return;
+    const { timestamp_seconds, type, notes } = proposal;
+    proposal = null;
+    if (eventDirty) { setError("The event form already holds unapplied work. Apply or cancel it, then choose the possible event again."); return; }
+    setEvent({ ...freshEvent(), timestamp_seconds: Math.max(0, Math.min(duration - .001, timestamp_seconds)), type: type in outcomes ? type as EventType : "pass", notes: notes.slice(0, 1000) });
+    setEditing(false); setEventDirty(true); setError("");
+    // Only a new proposal or a newly loaded review fills the form, not later edits to it.
+  }, [review?.run_id, runId, proposed]);
   useEffect(() => { onSaved?.(saved); }, [saved, onSaved]);
   useEffect(() => { onUnsaved?.(dirty || formDirty); }, [dirty, formDirty, onUnsaved]);
 

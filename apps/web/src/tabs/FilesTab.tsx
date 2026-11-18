@@ -1,13 +1,9 @@
 import { ArrowDownToLine } from "lucide-react";
-import { AnalyticsDashboard } from "../AnalyticsDashboard";
-import { analyticsAreas } from "../analytics-requirements";
 import { VideoInsightsDownloads } from "../VideoInsights";
 import type { ClipTabProps } from "../Workspace";
-import { Disclosure, Panel } from "../ui";
+import { Panel } from "../ui";
 
-const REQUIRED_METRICS = analyticsAreas.reduce((total, area) => total + area.metrics.length, 0);
-
-export function FilesTab({ result, saved, goTab, media }: ClipTabProps & { media: (path: string) => string }) {
+export function FilesTab({ result, saved, media }: ClipTabProps & { media: (path: string) => string }) {
   const insights = result.metrics.video_insights;
   const files = [
     { label: "Annotated video", description: "Full-duration MP4 with unreviewed model detections.", path: result.files.annotated_video, type: "MP4" },
@@ -54,10 +50,6 @@ export function FilesTab({ result, saved, goTab, media }: ClipTabProps & { media
         </ul>
         <p className="note">Downloads use the existing protected or signed file paths. Missing files are shown as unavailable.</p>
       </Panel>
-
-      <Disclosure variant="panel" summary="Analytics scope" meta={`${analyticsAreas.length} areas · ${REQUIRED_METRICS} required metrics`}>
-        <AnalyticsDashboard filename={result.metadata.filename} hasDetections status="complete" onReview={() => goTab("review")} />
-      </Disclosure>
     </div>
   );
 }

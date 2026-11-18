@@ -34,6 +34,30 @@ def test_only_approved_records_count_unknown_outcomes_and_denominators_stay_expl
     with pytest.raises(ReviewConflict):save_review(path,MANIFEST,body)
 
 
+def test_outcome_rates_use_known_outcomes_and_turnovers_and_player_outcomes_are_counted(tmp_path):
+    body=payload()
+    body['events']=[event('p1'),event('p2',outcome='incomplete'),event('p3',outcome='unknown'),
+        event('s1','shot','goal'),event('s2','shot','on_target'),event('s3','shot','off_target'),event('s4','shot','blocked'),event('s5','shot','unknown'),
+        event('t1','tackle','won'),event('t2','tackle','lost'),event('t3','tackle','unknown'),
+        event('d1','dribble','successful'),event('d2','dribble','unsuccessful'),event('d3','dribble','unsuccessful'),
+        event('u1','duel','won'),event('i1','interception','successful'),
+        event('a1','tackle','won',team='away'),event('draft','duel','lost',status='draft')]
+    summary=save_review(tmp_path/'review.json',MANIFEST,body)['summary']
+    home=summary['teams']['home']
+    assert summary['summary_version']==2 and set(summary['definitions'])=={'scope','rates','shots','turnovers'}
+    assert home['shots']==dict(recorded=5,on_target=2,goals=1,off_target=1,blocked=1,known_outcomes=4,on_target_pct=50,conversion_pct=25)
+    assert home['tackles']==dict(recorded=3,won=1,lost=1,known_outcomes=2,win_pct=50)
+    assert home['dribbles']==dict(recorded=3,successful=1,unsuccessful=2,known_outcomes=3,success_pct=33.33)
+    # The draft lost duel is not counted, and one decided duel gives a rate of 100, not a guess.
+    assert home['duels']==dict(recorded=1,won=1,lost=0,known_outcomes=1,win_pct=100)
+    assert home['turnovers']==dict(conceded=3,incomplete_passes=1,unsuccessful_dribbles=2,won=2,tackles_won=1)
+    away=summary['teams']['away']
+    assert away['tackles']['win_pct']==100 and away['shots']['conversion_pct'] is None and away['dribbles']['success_pct'] is None
+    player=next(p for p in summary['players'] if p['team']=='home')
+    assert player['event_count']==16 and player['outcomes']['shot']==dict(goal=1,on_target=1,off_target=1,blocked=1,unknown=1)
+    assert player['outcomes']['pass']==dict(completed=1,incomplete=1,unknown=1)
+
+
 @pytest.mark.parametrize('change',[lambda p:p.update(events=[event(at=31)]),
     lambda p:p.update(events=[event(at=float('nan'))]),
     lambda p:p.update(events=[event(),event()]),
