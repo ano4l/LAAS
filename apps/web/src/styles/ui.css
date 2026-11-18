@@ -975,6 +975,9 @@ input[type="range"].range {
   }
 
   .table--stack td[data-label] > div { min-width: 0; }
+  /* A cell of sentences reads badly pushed to the right: put its label above and the text below, left-aligned. */
+  .table--stack td.cell--prose[data-label] { flex-direction: column; align-items: stretch; gap: 4px; text-align: left; }
+  .table--stack td.cell--prose[data-label]::before { max-width: none; }
   .table--stack td[data-label] .row { justify-content: flex-end; }
   .table--stack tr.is-now > :first-child { box-shadow: none; }
   .table--stack tr.is-now { box-shadow: inset 2px 0 0 var(--flood); }

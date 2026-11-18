@@ -3,8 +3,9 @@ import { BallVisibility, MeasurementDefinitions } from "../VideoMeasurements";
 import type { ClipTabProps } from "../Workspace";
 import { DASH, num, pct, secs } from "../format";
 import { Disclosure, EmptyState, StatTile } from "../ui";
+import { proposeReviewEvent } from "../ReviewPanel";
 
-export function BallTab({ result }: ClipTabProps) {
+export function BallTab({ result, goTab }: ClipTabProps) {
   const insights = result.metrics.video_insights;
   const m = result.metrics.video_measurements;
   const selectedKnown = m && (m.selected_ball_candidate_frames !== undefined || m.selected_ball_candidate_coverage_pct !== undefined);
@@ -61,7 +62,7 @@ export function BallTab({ result }: ClipTabProps) {
         ? <BallVisibility measurements={m} />
         : <EmptyState title="No frame-by-frame ball measurements">Extended camera-image measurements are not present in this older run. Its available detections can still be downloaded under Files.</EmptyState>}
 
-      {insights && <CandidateQueue data={insights} />}
+      {insights && <CandidateQueue data={insights} onDraft={draft => { proposeReviewEvent(result.run_id, draft); goTab("review"); }} />}
 
       {(insights || m) && (
         <Disclosure variant="panel" summary="How this is measured" meta="Definitions and limits">
@@ -70,7 +71,7 @@ export function BallTab({ result }: ClipTabProps) {
               “Ball seen” (eligible selected-ball evidence) requires one selected observation with detection confidence ≥ {insights.parameters.min_ball_confidence ?? .25}. “Ball detected” (raw candidate coverage) can include ambiguous or
               lower-confidence observations; the measures use different eligibility rules.
             </p>
-            <InsightDefinitions data={insights} only={["zones", "events", "confidence"]} />
+            <InsightDefinitions data={insights} only={["zones", "events", "actions", "confidence"]} />
             <p>
               Ball path display: {insights.ball.path.length} points from {insights.ball.path_observations} observed positions, display stride {insights.ball.path_display_stride}. Segment IDs preserve gaps and scene boundaries.
               Confidence and support are not measured accuracy.

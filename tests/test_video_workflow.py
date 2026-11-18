@@ -238,3 +238,35 @@ def test_tile_ball_boxes_map_back_to_source_pixels(tmp_path, monkeypatch):
     rows = detector.detect(np.zeros((128, 256, 3), dtype=np.uint8))
     assert [r["bbox"] for r in rows] == [[10, 10, 20, 20], [106, 10, 116, 20], [138, 10, 148, 20]]
     assert all(row["model_role"] == "ball_tile_detector" and row["track_id"] is None for row in rows)
+
+
+def test_review_only_upload_stores_the_video_for_tagging_without_any_analysis(client, tmp_path, monkeypatch):
+    # No detector is available and the worker must never be asked to run: tagging needs neither.
+    monkeypatch.setattr(main, "yolo_capabilities", lambda _: {"available": False, "blockers": ["No model weights."]})
+    monkeypatch.setattr(main, "WORKER", SimpleNamespace(submit=lambda *args: pytest.fail("Tagging-only upload must not start analysis")))
+    video = make_video(tmp_path / "half.mp4", frames=50)
+    assert client.post("/videos/upload", files={"file": ("half.mp4", video.read_bytes())}).status_code == 503
+    job = client.post("/videos/upload?mode=review", files={"file": ("half.mp4", video.read_bytes())}).json()
+    result = job["result"]
+    assert job["status"] == "complete" and job["stage"] == "Ready to tag" and result["engine"] == "review_only"
+    assert result["metadata"]["duration_seconds"] == 2 and len(result["metadata"]["sha256"]) == 64
+    assert result["metadata"]["filename"] == "half.mp4" and result["metadata"]["stored_filename"] == Path(job["source_video"]).name
+    assert result["tracking"] == [] and "detection_summary" not in result and result["metrics"]["data_quality"]["mode"] == "review_only"
+    assert result["files"]["annotated_video"] == job["source_video"] and "No detection or tracking was run" in result["warnings"][0]
+    assert (main.settings.upload_dir / Path(job["source_video"]).name).is_file()
+    # It is listed, reopens from storage, and takes a review like any analysed clip.
+    run_id = result["run_id"]
+    assert [run["engine"] for run in client.get("/library").json()["runs"]] == ["review_only"]
+    assert client.get(f"/runs/{run_id}").json()["engine"] == "review_only"
+    review = client.get(f"/runs/{run_id}/review").json()
+    assert review["revision"] == 0 and review["source_sha256"] == result["metadata"]["sha256"]
+    event = dict(id="e1", type="shot", outcome="goal", team="home", timestamp_seconds=1.5, player=None, review_status="approved", notes="")
+    saved = client.post(f"/runs/{run_id}/review", json=dict(revision=0, teams=dict(home="Home", away="Away"), events=[event], coverage=[], possession_intervals=[]))
+    assert saved.status_code == 200 and saved.json()["summary"]["teams"]["home"]["shots"]["goals"] == 1
+    assert client.get("/capabilities").json()["analysis"]["review_only_upload"] is True
+
+
+def test_review_only_upload_still_rejects_what_cannot_be_decoded(client):
+    response = client.post("/videos/upload?mode=review", files={"file": ("broken.mp4", b"not a video", "video/mp4")})
+    assert response.status_code == 422 and not list(main.settings.upload_dir.iterdir())
+    assert client.post("/videos/upload?mode=other", files={"file": ("x.mp4", b"x")}).status_code == 422

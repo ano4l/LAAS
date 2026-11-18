@@ -9,6 +9,8 @@ type Props = {
   currentRunId?: string;
   /** True while the open clip is the synthetic interface demo rather than model output. */
   synthetic: boolean;
+  /** The open clip was uploaded only for tagging by hand, so nothing on screen is model output. */
+  reviewOnly?: boolean;
   runs: LibraryRun[];
   libraryLoading: boolean;
   /** Hides clip switching and the sample in the static demo build, which has no API. */
@@ -30,7 +32,7 @@ type Props = {
 };
 
 export function AppBar(props: Props) {
-  const { clipName, currentRunId, synthetic, runs, libraryLoading, demoMode, showSynthetic, onShowSynthetic, onOpen, onLibrary, onSample, sampleDisabled, fileRef, onFile, uploadDisabled, uploadTitle, uploadPct, jobStatus, onOpenJob } = props;
+  const { clipName, currentRunId, synthetic, reviewOnly, runs, libraryLoading, demoMode, showSynthetic, onShowSynthetic, onOpen, onLibrary, onSample, sampleDisabled, fileRef, onFile, uploadDisabled, uploadTitle, uploadPct, jobStatus, onOpenJob } = props;
   const onChange = (event: ChangeEvent<HTMLInputElement>) => { const file = event.target.files?.[0]; if (file) onFile(file); };
 
   return (
@@ -50,8 +52,8 @@ export function AppBar(props: Props) {
               padded
               panelLabel="How to read this"
               triggerClassName="appbar__badge"
-              triggerLabel={`${synthetic ? "Synthetic demo data" : "Model output, unreviewed"}. How to read this`}
-              trigger={<><i aria-hidden="true" />{synthetic ? "Synthetic demo · not real analysis" : "Model output · unreviewed"}<Info size={14} aria-hidden="true" /></>}
+              triggerLabel={`${synthetic ? "Synthetic demo data" : reviewOnly ? "Tagging only, no model output" : "Model output, unreviewed"}. How to read this`}
+              trigger={<><i aria-hidden="true" />{synthetic ? "Synthetic demo · not real analysis" : reviewOnly ? "Tagging only · no model output" : "Model output · unreviewed"}<Info size={14} aria-hidden="true" /></>}
             >
               <div className="howto">
                 <h2>How to read this</h2>

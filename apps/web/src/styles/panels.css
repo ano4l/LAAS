@@ -560,3 +560,27 @@
 .profile__bands { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
 .profile__bands li { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(60px, 1fr) auto; align-items: center; gap: 12px; font-size: 14px; }
 @media (max-width: 560px) { .profile__bands li { grid-template-columns: minmax(0, 1fr) auto; } .profile__bands li .bar { grid-column: 1 / -1; grid-row: 2; } }
+
+/* A drawn pitch for placing an event by eye, and for showing where approved events were placed. */
+.pitchpick { max-width: 560px; }
+.pitchpick svg { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: 10px; background: #0b1612; }
+.pitchpick--live svg { cursor: crosshair; }
+.pitchpick--live .pitchpick__mark { pointer-events: none; }
+.pitchpick__grass { fill: #14382a; }
+.pitchpick__lines > *, .pitchpick__lines g > * { fill: none; stroke: rgba(238, 242, 234, .62); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.pitchpick__lines g > .pitchpick__spot { fill: rgba(238, 242, 234, .62); stroke: none; }
+.pitchpick__lines g > .pitchpick__goal { stroke: rgba(238, 242, 234, .4); }
+.pitchpick__mark { --tone: var(--chalk); }
+.pitchpick__mark--away { --tone: var(--flood); }
+.pitchpick__mark line { stroke: var(--tone); stroke-width: 2; opacity: .8; vector-effect: non-scaling-stroke; }
+.pitchpick__mark circle { fill: #14382a; stroke: var(--tone); stroke-width: 2.5; vector-effect: non-scaling-stroke; }
+.pitchpick__mark circle.is-filled { fill: var(--tone); }
+.pitchpick__mark rect { fill: var(--tone); }
+.pitchpick__ends { display: flex; justify-content: space-between; gap: 12px; margin-top: 4px; color: var(--chalk-2); font-size: 12.5px; }
+.pitchpick__legend { display: flex; flex-wrap: wrap; gap: 16px; }
+.pitchpick__legend span { display: inline-flex; align-items: center; gap: 6px; }
+.pitchpick__key { width: 11px; height: 11px; border: 2px solid var(--chalk); border-radius: 50%; }
+.pitchpick__key--away { border-color: var(--flood); }
+
+/* One line-up player per row; the row wraps on a narrow screen. */
+.lineup { align-items: end; padding-bottom: 10px; border-bottom: 1px solid var(--line); }

@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { AlertTriangle, ArrowRight, CircleDot, ClipboardCheck, FolderDown, Play, Shapes, Timer, Users, type LucideIcon } from "lucide-react";
+import { AlertTriangle, ArrowRight, BarChart3, CircleDot, ClipboardCheck, FolderDown, Play, Shapes, Timer, Users, type LucideIcon } from "lucide-react";
 import { PossessionOverview, possessionTakeaway } from "../TemporalPossession";
 import { InsightDefinitions } from "../VideoInsights";
 import { MeasurementDefinitions } from "../VideoMeasurements";
@@ -24,6 +24,7 @@ const EXPLORE: { tab: TabId; title: string; text: string; icon: LucideIcon }[] =
   { tab: "ball", title: "Ball", text: "The ball's path through the image and possible events to review.", icon: CircleDot },
   { tab: "shape", title: "Shape", text: "How each group spreads and moves, and where players were seen.", icon: Shapes },
   { tab: "players", title: "Players", text: "Every tracked identity and the provisional kit groups.", icon: Users },
+  { tab: "analytics", title: "Analytics", text: "Every requested analytic: figures from approved events, and what the rest still need.", icon: BarChart3 },
   { tab: "review", title: "Review", text: "Add and approve your own event records against the footage.", icon: ClipboardCheck },
   { tab: "files", title: "Files", text: "Annotated video, model data, saved review and exports.", icon: FolderDown },
 ];

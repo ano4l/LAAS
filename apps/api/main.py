@@ -104,6 +104,8 @@ def capabilities() -> dict:
                      "event_detection": False,
                      # Automatic per-frame estimates for the shape view only; not measured distances or speeds.
                      "pitch_calibration": bool(yolo_capabilities(ROOT).get("pitch_calibration")),
+                     # A video can be stored for tagging by hand with no detection, so its length is not bound by the analysis.
+                     "review_only_upload": True,
                      "automatic_video_insights": True, "event_candidate_method": "unreviewed_temporal_geometry"},
     }
 
@@ -114,9 +116,10 @@ def ai_status() -> dict:
 
 
 @app.post("/videos/upload", response_model=JobResponse)
-def upload_video(background_tasks: BackgroundTasks, file: UploadFile = File(...)) -> dict:
+def upload_video(background_tasks: BackgroundTasks, file: UploadFile = File(...), mode: Literal["analysis", "review"] = "analysis") -> dict:
+    # mode=review stores the video for tagging by hand: no detector is needed and none is run.
     caps = yolo_capabilities(ROOT)
-    if not caps["available"]:
+    if mode == "analysis" and not caps["available"]:
         raise HTTPException(status_code=503, detail=" ".join(caps["blockers"]))
     original_name = file.filename or "clip.mp4"
     suffix = Path(original_name).suffix.lower() or ".mp4"
@@ -128,7 +131,7 @@ def upload_video(background_tasks: BackgroundTasks, file: UploadFile = File(...)
     _save_upload(file, target)
     try:
         metadata = video_metadata(target)
-        if os.getenv("ANALYSIS_COMPUTE", "local") == "modal":
+        if mode == "analysis" and os.getenv("ANALYSIS_COMPUTE", "local") == "modal":
             from workers.video.modal_policy import validate_video
             validate_video(target, metadata)
     except ValueError as exc:
@@ -137,8 +140,31 @@ def upload_video(background_tasks: BackgroundTasks, file: UploadFile = File(...)
 
     job = _new_job(job_id, target)
     _register_job(job)
+    if mode == "review":
+        # Shown under the name it was uploaded with; the stored copy keeps its own name.
+        return _public_job(_complete_review_only(job, target, dict(metadata, filename=Path(original_name).name, stored_filename=target.name)))
     WORKER.submit(_process_job, job_id, target)
     return _public_job(job)
+
+
+def _complete_review_only(job: dict, target: Path, metadata: dict) -> dict:
+    from workers.video.review_only import create_run
+    try:
+        result = create_run(target, settings.output_dir, metadata, job["source_video"])
+    except Exception as exc:
+        target.unlink(missing_ok=True)
+        patch = {"status": "failed", "stage": "Failed", "error": str(exc)}
+        with LOCK:
+            ACTIVE_JOBS[job["id"]].update(patch)
+        repository.update_job(job["id"], **patch)
+        raise HTTPException(status_code=500, detail="The video was uploaded but could not be prepared for tagging.") from exc
+    repository.upsert_run(result, job_id=job["id"])
+    patch = {"status": "complete", "stage": "Ready to tag", "progress": 1.0, "run_id": result["run_id"], "error": None}
+    with LOCK:
+        ACTIVE_JOBS[job["id"]].update(patch)
+        ACTIVE_JOBS[job["id"]]["result"] = result
+    repository.update_job(job["id"], **patch)
+    return ACTIVE_JOBS[job["id"]]
 
 
 @app.post("/demo-job", response_model=JobResponse)
@@ -297,7 +323,7 @@ def put_player_labels(run_id:str,payload:dict):
 def _review_location(run_id):
     manifest=_read_manifest(run_id)
     if not manifest:raise HTTPException(404,'Run not found')
-    if manifest.get('engine')!='yolo_bytetrack':raise HTTPException(422,'Only real video runs can be reviewed')
+    if manifest.get('engine') not in {'yolo_bytetrack','review_only'}:raise HTTPException(422,'Only real video runs can be reviewed')
     return settings.output_dir/run_id/'review.json',manifest
 
 
@@ -307,6 +333,14 @@ def get_review(run_id:str):
     with REVIEW_LOCK:
         path,manifest=_review_location(run_id)
         return load_review(path,manifest)
+
+
+@app.get('/runs/{run_id}/review/approved-events')
+def get_approved_events(run_id:str):
+    from workers.video.event_review import load_review,approved_export
+    with REVIEW_LOCK:
+        path,manifest=_review_location(run_id)
+        return approved_export(load_review(path,manifest),manifest)
 
 
 @app.post('/runs/{run_id}/review')
@@ -413,7 +447,7 @@ def _read_manifest(run_id: str | None) -> dict | None:
         ensure_insights(manifest, manifest_path.parent)
         # The untouched upload, for clean frames behind diagrams. Offered only when that exact file is still stored.
         name = Path(str(manifest.get("metadata", {}).get("filename") or "")).name
-        if name and (settings.upload_dir / name).is_file():
+        if manifest.get("engine") != "review_only" and name and (settings.upload_dir / name).is_file():
             manifest.setdefault("files", {})["source_video"] = f"/media/uploads/{name}"
         return manifest
     except json.JSONDecodeError:

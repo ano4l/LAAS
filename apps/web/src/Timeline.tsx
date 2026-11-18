@@ -5,6 +5,7 @@ import { clock, clockTenths, words } from "./format";
 import { useKits, type Tone } from "./kits";
 import { usePlayback } from "./playback";
 import { Swatch } from "./ui";
+import { candidateName } from "./VideoInsights";
 import { KIND_FILL, STATE_LABEL, STATE_TECHNICAL, segmentKind, type SegmentKind } from "./vocabulary";
 import type { SequenceState } from "./TemporalPossession";
 
@@ -74,7 +75,7 @@ export function Timeline({ result, saved }: { result: AnalysisResult; saved: Rev
       at: candidate.timestamp_seconds,
       shape: "possible",
       tone: null,
-      text: `${candidate.type === "possible_pass" ? "Possible pass" : candidate.type === "possible_turnover" ? "Possible turnover" : words(candidate.type)} · to review`,
+      text: `${candidateName(candidate.type)} · to review`,
     }));
     saved?.events.forEach(event => list.push({
       key: `review-${event.id}`,
