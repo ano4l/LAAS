@@ -26,6 +26,9 @@ SITUATIONS={'open_play','free_kick','corner','penalty','throw_in','goal_kick','k
 WITH_END_POINT={'pass','shot','dribble'}
 WITH_BODY_PART={'pass','shot'}
 EXPORT_VERSION='1.0.0'
+MAX_LINEUP=40
+PER_90_MIN_MINUTES=10  # below this a rate per 90 minutes is mostly noise
+PER_90_MIN_REVIEWED=.9  # share of the video that must be marked reviewed before any rate per 90 is given
 
 
 class ReviewConflict(ValueError):pass
@@ -80,6 +83,49 @@ def clean_periods(payload,duration):
     return periods
 
 
+def empty_lineups():return dict(home=[],away=[])
+
+
+def name_key(value):return ' '.join(str(value).split()).casefold()
+
+
+def clean_lineups(payload):
+    """Who played for each team in this video, typed by the reviewer: name, shirt number, position, starter and minutes on the pitch."""
+    if not isinstance(payload,dict) or set(payload)-{'home','away'}:raise ValueError('Invalid line-ups')
+    lineups=empty_lineups();identifiers=set()
+    for side in lineups:
+        rows=payload.get(side,[])
+        if not isinstance(rows,list) or len(rows)>MAX_LINEUP:raise ValueError(f'A line-up is a list of at most {MAX_LINEUP} players')
+        names=set()
+        for row in rows:
+            if not isinstance(row,dict):raise ValueError('Invalid line-up player')
+            identity=row.get('id');name=text(row.get('name'),'line-up player name',100)
+            if not isinstance(identity,str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}',identity) or identity in identifiers:
+                raise ValueError('Line-up player IDs must be valid and unique')
+            if name_key(name) in names:raise ValueError(f'{name} is listed twice for one team')
+            identifiers.add(identity);names.add(name_key(name))
+            number=row.get('number');minutes=row.get('minutes');position=row.get('position')
+            if number in ('',None):number=None
+            elif not isinstance(number,str) or not re.fullmatch(r'\d{1,2}',number):raise ValueError('A shirt number is one or two digits')
+            if minutes is not None and (not finite(minutes) or not 0<=minutes<=150):raise ValueError('Minutes played must be between 0 and 150')
+            if not isinstance(row.get('started',False),bool):raise ValueError('Invalid starter flag')
+            lineups[side].append(dict(id=identity,name=name,number=number,
+                position=text(position,'position',30,True) or None if position is not None else None,
+                started=row.get('started',False),minutes=None if minutes is None else round(float(minutes),1)))
+    return lineups
+
+
+def per_90_support(state,duration,reviewed):
+    """Whether a rate per 90 minutes can be given, and if not, why. Minutes are trusted only when the footage covers them."""
+    minutes=[p['minutes'] for side in ('home','away') for p in (state.get('lineups') or empty_lineups())[side] if p['minutes']]
+    if not minutes:return False,'No minutes played are recorded in the line-ups.'
+    if reviewed<PER_90_MIN_REVIEWED*duration:
+        return False,f'Only {round(100*reviewed/duration,1) if duration else 0}% of the video is marked as reviewed, so events may be missing from the minutes played.'
+    if duration/60<.8*max(minutes):
+        return False,f'The video is {round(duration/60,1)} minutes long but a player is listed with {max(minutes):g} minutes, so events from the rest of those minutes are missing.'
+    return True,None
+
+
 def attacking(location,team,period,periods):
     """The point turned so the event's team attacks towards x = LENGTH_M. None when the direction of play is not recorded."""
     direction=periods[str(period)]['home_attacks']
@@ -118,6 +164,7 @@ def summarize(state,duration):
     teams={}
     players={}
     player_outcomes={}
+    spelling={}
     for side in ['home','away']:
         rows=[e for e in events if e['team']==side]
         if not rows:
@@ -157,12 +204,30 @@ def summarize(state,duration):
             progressive_passes=sum(progressive(a,b) for a,b in turned) if turned else None)
         for e in rows:
             if e.get('player'):
-                key=(side,e['player']);counts_player=players.setdefault(key,Counter());counts_player[e['type']]+=1
+                # One player typed with different spacing or capitals is still one player.
+                key=(side,name_key(e['player']));spelling.setdefault(key,e['player'])
+                counts_player=players.setdefault(key,Counter());counts_player[e['type']]+=1
                 player_outcomes.setdefault(key,{}).setdefault(e['type'],Counter())[e['outcome']]+=1
     possession=Counter()
     for row in state['possession_intervals']:
         if row['review_status']=='approved':possession[row['team']]+=row['end_seconds']-row['start_seconds']
     known=possession['home']+possession['away']
+    lineups=state.get('lineups') or empty_lineups()
+    listed={(side,name_key(p['name'])):p for side in lineups for p in lineups[side]}
+    supported,reason=per_90_support(state,duration,reviewed)
+    def player_row(side,key,counts):
+        entry=listed.get((side,key))
+        player=entry['name'] if entry else spelling[side,key]
+        minutes=entry['minutes'] if entry else None
+        rates=({kind:round(90*n/minutes,2) for kind,n in sorted(counts.items())}
+               if supported and minutes and minutes>=PER_90_MIN_MINUTES else None)
+        return dict(team=side,player=player,event_count=sum(counts.values()),counts=dict(counts),
+            outcomes={kind:dict(outcomes) for kind,outcomes in sorted(player_outcomes.get((side,key),{}).items())},
+            listed=bool(entry),lineup_id=entry['id'] if entry else None,number=entry['number'] if entry else None,
+            position=entry['position'] if entry else None,started=entry['started'] if entry else None,minutes=minutes,per_90=rates)
+    # Events are matched to a line-up by the typed name. A listed player with no approved event still appears, with zero.
+    rows=[player_row(side,key,counts) for (side,key),counts in sorted(players.items())]
+    rows+=[player_row(side,key,Counter()) for (side,key) in sorted(listed) if (side,key) not in players]
     return dict(scope='approved_annotations_only',summary_version=2,approved_events=len(events),draft_events=len(state['events'])-len(events),
         reviewed_seconds=round(reviewed,3),reviewed_video_pct=percentage(reviewed,duration),teams=teams,
         definitions=dict(
@@ -170,10 +235,13 @@ def summarize(state,duration):
             rates='Each rate divides by records with a known outcome. Records with an unknown outcome are counted as recorded but left out of rates.',
             shots='On target includes goals. Conversion is goals divided by shots with a known outcome.',
             turnovers='Possession lost is incomplete passes plus unsuccessful dribbles. Possession won is interceptions plus tackles won. Loose balls, clearances and fouls are not recorded, so neither is a full turnover count.',
+            per_90='A rate per 90 minutes is a player\'s approved events divided by the minutes typed in the line-up, times 90. It is given only when at least 90% of the video is marked as reviewed, the video is long enough to contain those minutes, and the player has at least 10 minutes.',
             locations='A location is where the reviewer clicked on a drawn 105 x 68 m pitch. It is a judgement by eye, not a measurement.',
             progressive_passes='A pass is progressive when it ends closer to the opponent goal by at least 30 m with both ends in the own half, 15 m when it crosses halfway, or 10 m with both ends in the opponent half (the rule Wyscout publishes). It is counted only for passes with a start, an end and a recorded direction of play, whether or not the pass was completed.'),
-        players=[dict(team=side,player=player,event_count=sum(counts.values()),counts=dict(counts),
-                      outcomes={kind:dict(outcomes) for kind,outcomes in sorted(player_outcomes[side,player].items())}) for (side,player),counts in sorted(players.items())],
+        players=rows,
+        lineups=dict(home=len(lineups['home']),away=len(lineups['away']),
+            unlisted_event_players=sum(1 for row in rows if not row['listed'] and row['event_count'])),
+        per_90=dict(supported=supported,reason=reason,min_minutes=PER_90_MIN_MINUTES),
         possession=dict(home_seconds=round(possession['home'],3),away_seconds=round(possession['away'],3),
             unknown_seconds=round(max(0,duration-known),3),home_share_pct=percentage(possession['home'],known),
             away_share_pct=percentage(possession['away'],known),known_coverage_pct=percentage(known,duration)))
@@ -181,7 +249,7 @@ def summarize(state,duration):
 
 def empty_review(manifest):
     state=dict(schema_version='event-review-2',run_id=manifest['run_id'],revision=0,teams=dict(home='Home',away='Away'),
-               source_sha256=manifest['metadata'].get('sha256'),periods=default_periods(),coverage=[],events=[],possession_intervals=[])
+               source_sha256=manifest['metadata'].get('sha256'),periods=default_periods(),lineups=empty_lineups(),coverage=[],events=[],possession_intervals=[])
     state['summary']=summarize(state,manifest['metadata']['duration_seconds'])
     return state
 
@@ -193,6 +261,7 @@ def load_review(path,manifest):
         raise ValueError('Review source does not match this video')
     # A review saved before locations and periods existed reads as one with none recorded.
     state.setdefault('periods',default_periods())
+    state.setdefault('lineups',empty_lineups())
     for event in state['events']:
         event.setdefault('period',1)
         for key in ('location','end_location','body_part','situation','receiver'):event.setdefault(key,None)
@@ -211,7 +280,8 @@ def save_review(path,manifest,payload):
     state=empty_review(manifest)
     state.update(revision=revision+1,teams={side:text(teams.get(side),'team name',80) for side in ['home','away']},
                  updated_at=datetime.now(timezone.utc).isoformat(),source='human_annotation',
-                 periods=clean_periods(payload.get('periods',current['periods']),duration))
+                 periods=clean_periods(payload.get('periods',current['periods']),duration),
+                 lineups=clean_lineups(payload.get('lineups',current['lineups'])))
     coverage=payload.get('coverage',[])
     events=payload.get('events',[])
     possession=payload.get('possession_intervals',[])
@@ -275,11 +345,16 @@ def approved_export(state,manifest):
     events=sorted((e for e in state['events'] if e['review_status']=='approved'),key=lambda e:(e.get('period',1),e['timestamp_seconds'],e['id']))
     used={e.get('period',1) for e in events}
     def turned(e,key):return attacking(e.get(key),e['team'],e.get('period',1),periods)
+    lineups=state.get('lineups') or empty_lineups()
+    listed={(side,name_key(p['name'])):p['id'] for side in lineups for p in lineups[side]}
+    def player_id(e,key):return listed.get((e['team'],name_key(e[key]))) if e.get(key) else None
     return dict(schema='laas.approved-events',schema_version=EXPORT_VERSION,generated_at=datetime.now(timezone.utc).isoformat(),
         scope='Saved, approved human annotations for one video. Drafts and model predictions are not included. Totals cover what was recorded, not the whole match.',
         source=dict(run_id=state['run_id'],filename=manifest['metadata'].get('filename'),sha256=manifest['metadata'].get('sha256'),duration_seconds=duration),
         review=dict(revision=state['revision'],updated_at=state.get('updated_at')),
-        teams=[dict(team_id=side,name=state['teams'][side]) for side in ['home','away']],
+        teams=[dict(team_id=side,name=state['teams'][side],
+                    players=[dict(player_id=p['id'],name=p['name'],shirt_number=p['number'],position=p['position'],started=p['started'],minutes_played=p['minutes']) for p in lineups[side]])
+               for side in ['home','away']],
         coordinate_system=dict(unit='metre',pitch_length=LENGTH_M,pitch_width=WIDTH_M,pitch_dimensions='assumed, not measured',
             origin='top-left corner of the pitch as drawn in the review tool',x='left to right',y='top to bottom',
             location='where the reviewer clicked for the event; a judgement by eye',
@@ -287,7 +362,8 @@ def approved_export(state,manifest):
         periods=[dict(period_id=p,**periods[str(p)]) for p in PERIODS
                  if p in used or periods[str(p)]['home_attacks'] or periods[str(p)]['reference_video_seconds'] is not None],
         events=[dict(event_id=e['id'],period_id=e.get('period',1),video_timestamp_seconds=e['timestamp_seconds'],match_clock_seconds=match_clock(e,periods),
-            team_id=e['team'],team_name=state['teams'][e['team']],player_name=e.get('player'),receiver_name=e.get('receiver'),
+            team_id=e['team'],team_name=state['teams'][e['team']],player_name=e.get('player'),player_id=player_id(e,'player'),
+            receiver_name=e.get('receiver'),receiver_id=player_id(e,'receiver'),
             type=e['type'],result=e['outcome'],body_part=e.get('body_part'),situation=e.get('situation'),
             location=e.get('location'),end_location=e.get('end_location'),
             location_attacking=turned(e,'location'),end_location_attacking=turned(e,'end_location'),

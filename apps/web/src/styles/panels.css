@@ -581,3 +581,6 @@
 .pitchpick__legend span { display: inline-flex; align-items: center; gap: 6px; }
 .pitchpick__key { width: 11px; height: 11px; border: 2px solid var(--chalk); border-radius: 50%; }
 .pitchpick__key--away { border-color: var(--flood); }
+
+/* One line-up player per row; the row wraps on a narrow screen. */
+.lineup { align-items: end; padding-bottom: 10px; border-bottom: 1px solid var(--line); }

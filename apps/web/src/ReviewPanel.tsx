@@ -17,6 +17,10 @@ type Approval = "draft" | "approved";
 export type Annotation = { id: string; timestamp_seconds: number; type: EventType; team: Team; player: string | null; outcome: string; review_status: Approval; notes: string;
   period?: number; location?: PitchPoint | null; end_location?: PitchPoint | null; body_part?: string | null; situation?: string | null; receiver?: string | null };
 type PeriodInfo = { home_attacks: "left" | "right" | null; reference_video_seconds: number | null; reference_clock_seconds: number | null };
+/** One player in a line-up, typed by the reviewer. Minutes are the minutes on the pitch during this video. */
+type LineupPlayer = { id: string; name: string; number: string | null; position: string | null; started: boolean; minutes: number | null };
+type Lineups = { home: LineupPlayer[]; away: LineupPlayer[] };
+const NO_LINEUPS: Lineups = { home: [], away: [] };
 const PERIOD_NAMES: Record<string, string> = { 1: "First half", 2: "Second half", 3: "Extra time, first half", 4: "Extra time, second half" };
 const NO_PERIOD: PeriodInfo = { home_attacks: null, reference_video_seconds: null, reference_clock_seconds: null };
 const BODY_PARTS = ["foot", "head", "other"], SITUATIONS = ["open_play", "free_kick", "corner", "penalty", "throw_in", "goal_kick", "kick_off"];
@@ -34,9 +38,12 @@ type TeamSummary = { name: string; event_count: number; passes: { recorded: numb
 export type { TeamSummary };
 type ReviewSummary = { scope: string; summary_version?: number; approved_events: number; draft_events: number; reviewed_seconds: number; reviewed_video_pct: number | null;
   definitions?: Record<string, string>;
-  teams: { home: TeamSummary | null; away: TeamSummary | null }; players: { team: Team; player: string; event_count: number; counts: Record<string, number>; outcomes?: Record<string, Record<string, number>> }[];
+  teams: { home: TeamSummary | null; away: TeamSummary | null };
+  lineups?: { home: number; away: number; unlisted_event_players: number }; per_90?: { supported: boolean; reason: string | null; min_minutes: number };
+  players: { team: Team; player: string; event_count: number; counts: Record<string, number>; outcomes?: Record<string, Record<string, number>>;
+    listed?: boolean; number?: string | null; position?: string | null; started?: boolean | null; minutes?: number | null; per_90?: Record<string, number> | null }[];
   possession: { home_seconds: number; away_seconds: number; unknown_seconds: number; home_share_pct: number | null; away_share_pct: number | null; known_coverage_pct: number | null } };
-export type Review = { schema_version: string; run_id: string; revision: number; teams: { home: string; away: string }; periods?: Record<string, PeriodInfo>; coverage: [number, number][];
+export type Review = { schema_version: string; run_id: string; revision: number; teams: { home: string; away: string }; periods?: Record<string, PeriodInfo>; lineups?: Lineups; coverage: [number, number][];
   events: Annotation[]; possession_intervals: Possession[]; summary: ReviewSummary };
 type Props = { runId: string; duration: number; api: string; authHeaders: () => Record<string, string>; onSaved?: (saved: Review | null) => void; onUnsaved?: (unsaved: boolean) => void };
 type CoverageForm = { start: string; end: string };
@@ -53,7 +60,7 @@ export function proposeReviewEvent(runId: string, draft: { timestamp_seconds: nu
 }
 const freshEvent = (): Annotation => ({ id: crypto.randomUUID(), timestamp_seconds: 0, type: "pass", team: "home", player: null, outcome: "unknown", review_status: "draft", notes: "", period: 1, location: null, end_location: null, body_part: null, situation: null, receiver: null });
 const count = (value: number | null) => value === null ? "Unknown" : value.toLocaleString(undefined, { maximumFractionDigits: 2 });
-const payload = (review: Review) => ({ revision: review.revision, teams: review.teams, periods: review.periods, coverage: review.coverage, events: review.events, possession_intervals: review.possession_intervals });
+const payload = (review: Review) => ({ revision: review.revision, teams: review.teams, periods: review.periods, lineups: review.lineups, coverage: review.coverage, events: review.events, possession_intervals: review.possession_intervals });
 const hasUnsavedDraft = (draft: ReviewDraft) => JSON.stringify(payload(draft.review)) !== JSON.stringify(payload(draft.saved)) || draft.eventDirty || Boolean(draft.coverage.start || draft.coverage.end || draft.interval.start || draft.interval.end || draft.interval.approved || draft.interval.team !== "unknown");
 // The warning belongs to the tab, not the currently mounted run: other runs may hold drafts.
 const warnForReviewDrafts = (event: BeforeUnloadEvent) => {
@@ -183,6 +190,10 @@ export function ReviewPanel({ runId, duration, api, authHeaders, onSaved, onUnsa
     const current = event[which] ?? { x: PITCH_LENGTH / 2, y: PITCH_WIDTH / 2 };
     changeEvent({ [which]: value.trim() === "" || !Number.isFinite(Number(value)) ? null : { ...current, [axis]: Math.max(0, Math.min(axis === "x" ? PITCH_LENGTH : PITCH_WIDTH, Number(value))) } });
   };
+  const lineups = review?.lineups ?? NO_LINEUPS;
+  const setLineup = (side: Team, players: LineupPlayer[]) => edit({ lineups: { ...lineups, [side]: players } });
+  const patchPlayer = (side: Team, id: string, update: Partial<LineupPlayer>) => setLineup(side, lineups[side].map(player => player.id === id ? { ...player, ...update } : player));
+  const namesId = useId();
   const periodOf = (id: number | string) => review?.periods?.[String(id)] ?? NO_PERIOD;
   const setPeriod = (id: string, update: Partial<PeriodInfo>) => { if (review) edit({ periods: { ...review.periods, [id]: { ...periodOf(id), ...update } } }); };
   // Which goal is whose depends on the direction of play recorded for the event's period.
@@ -251,14 +262,15 @@ export function ReviewPanel({ runId, duration, api, authHeaders, onSaved, onUnsa
                   <select value={event.outcome} onChange={e => changeEvent({ outcome: e.target.value })}>{outcomes[event.type].map(outcome => <option key={outcome} value={outcome}>{sentence(outcome)}</option>)}</select>
                 </Field>
                 <Field label="Player (optional)">
-                  <input maxLength={100} value={event.player ?? ""} onChange={e => changeEvent({ player: e.target.value })} placeholder="Verified name or manual label" />
+                  <input maxLength={100} list={namesId} value={event.player ?? ""} onChange={e => changeEvent({ player: e.target.value })} placeholder="Verified name or manual label" />
+                  <datalist id={namesId}>{lineups[event.team].map(player => <option key={player.id} value={player.name} />)}</datalist>
                 </Field>
                 <Field label="Period">
                   <select value={event.period ?? 1} onChange={e => changeEvent({ period: Number(e.target.value) })}>{Object.entries(PERIOD_NAMES).map(([id, name]) => <option key={id} value={id}>{name}</option>)}</select>
                 </Field>
                 {event.type === "pass" && (
                   <Field label="Receiver (optional)">
-                    <input maxLength={100} value={event.receiver ?? ""} onChange={e => changeEvent({ receiver: e.target.value || null })} placeholder="Who the pass went to" />
+                    <input maxLength={100} list={namesId} value={event.receiver ?? ""} onChange={e => changeEvent({ receiver: e.target.value || null })} placeholder="Who the pass went to" />
                   </Field>
                 )}
                 {hasBodyPart(event.type) && <>
@@ -345,6 +357,28 @@ export function ReviewPanel({ runId, duration, api, authHeaders, onSaved, onUnsa
                 {(["home", "away"] as const).map(team => <Field key={team} label={`${team === "home" ? "Home" : "Away"} team name`}><input maxLength={80} required value={review.teams[team]} onChange={e => edit({ teams: { ...review.teams, [team]: e.target.value } })} /></Field>)}
               </div>
               <p>Enter real team names only when verified. These labels are independent of the model's anonymous kit groups.</p>
+            </Disclosure>
+
+            <Disclosure summary="Line-ups and minutes" meta={lineups.home.length + lineups.away.length ? `${lineups.home.length} + ${lineups.away.length} players` : "Optional"}>
+              <p>List who played in this video. A name listed here is offered when you type a player on an event, and events are matched to the line-up by that name. Minutes are the minutes each player was on the pitch during this video; rates per 90 minutes are given only when the reviewed footage covers them.</p>
+              {(["home", "away"] as const).map(side => (
+                <fieldset key={side} className="stack stack--sm">
+                  <legend><strong>{review.teams[side]}</strong></legend>
+                  {lineups[side].map(player => (
+                    <div key={player.id} className="formgrid lineup">
+                      <Field label="Shirt number"><input inputMode="numeric" maxLength={2} value={player.number ?? ""} onChange={e => patchPlayer(side, player.id, { number: e.target.value.trim() || null })} /></Field>
+                      <Field label="Name"><input maxLength={100} required value={player.name} onChange={e => patchPlayer(side, player.id, { name: e.target.value })} /></Field>
+                      <Field label="Position"><input maxLength={30} value={player.position ?? ""} placeholder="For example CB" onChange={e => patchPlayer(side, player.id, { position: e.target.value || null })} /></Field>
+                      <Field label="Minutes in this video"><input type="number" min="0" max="150" step="0.5" value={player.minutes ?? ""} onChange={e => patchPlayer(side, player.id, { minutes: e.target.value.trim() === "" ? null : Number(e.target.value) })} /></Field>
+                      <label className="check"><input type="checkbox" checked={player.started} onChange={e => patchPlayer(side, player.id, { started: e.target.checked })} />Started</label>
+                      <div><button type="button" className="btn btn--secondary btn--sm btn--danger" aria-label={`Remove ${player.name || "this player"} from ${review.teams[side]}`} onClick={() => setLineup(side, lineups[side].filter(other => other.id !== player.id))}>Remove</button></div>
+                    </div>
+                  ))}
+                  {!lineups[side].length && <p className="note">No players listed for {review.teams[side]}.</p>}
+                  <div><button type="button" className="btn btn--secondary btn--sm" disabled={lineups[side].length >= 40} onClick={() => setLineup(side, [...lineups[side], { id: crypto.randomUUID(), name: "", number: null, position: null, started: false, minutes: null }])}>Add a player to {review.teams[side]}</button></div>
+                </fieldset>
+              ))}
+              <p>Names are what you type, not a verified roster. Every listed player needs a name before the review can be saved.</p>
             </Disclosure>
 
             <Disclosure summary="Periods: direction of play and match clock" meta="Optional">

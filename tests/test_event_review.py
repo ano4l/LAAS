@@ -100,6 +100,49 @@ def test_review_saved_before_locations_existed_still_loads(tmp_path):
     assert save_review(path,MANIFEST,dict(payload(),revision=saved['revision'],events=[event()]))['revision']==2
 
 
+def lineup(identity,name,**extra):return dict(id=identity,name=name,**extra)
+
+
+def test_lineups_match_events_by_name_and_rates_per_90_need_reviewed_footage_that_covers_the_minutes(tmp_path):
+    from workers.video.event_review import approved_export
+    half=dict(MANIFEST,metadata=dict(duration_seconds=45*60,sha256='source-hash'))
+    body=payload()
+    body['lineups']=dict(home=[lineup('h7','Player 7',number='7',position='MF',started=True,minutes=45),
+                               lineup('h9','Sub Nine',number='9',minutes=5),lineup('h1','Keeper',started=True,minutes=45)],away=[])
+    body['events']=[event('a'),event('b',at=60),dict(event('c','shot','goal',at=90),player='  player 7 '),
+                    dict(event('d',at=100),player='Sub Nine'),dict(event('e',at=120),player='Unlisted')]
+    path=tmp_path/'review.json'
+    partly=save_review(path,half,body)['summary']
+    assert partly['per_90']['supported'] is False and 'marked as reviewed' in partly['per_90']['reason']
+    assert all(p['per_90'] is None for p in partly['players'])
+    body['revision']=1;body['coverage']=[[0,45*60]]
+    saved=save_review(path,half,body);summary=saved['summary']
+    rows={p['player']:p for p in summary['players']}
+    assert summary['per_90']==dict(supported=True,reason=None,min_minutes=10)
+    assert summary['lineups']==dict(home=3,away=0,unlisted_event_players=1)
+    # Two passes in 45 minutes is four per 90. The same name typed with other spacing and case is the same player.
+    assert rows['Player 7']['per_90']=={'pass':4.0,'shot':2.0} and rows['Player 7']['number']=='7' and rows['Player 7']['minutes']==45
+    assert rows['Player 7']['event_count']==3 and 'player 7' not in rows
+    assert rows['Sub Nine']['per_90'] is None and rows['Sub Nine']['minutes']==5   # under ten minutes
+    assert rows['Unlisted']['listed'] is False and rows['Unlisted']['per_90'] is None
+    assert rows['Keeper']['event_count']==0 and rows['Keeper']['listed'] is True
+    exported=approved_export(saved,half)
+    assert exported['teams'][0]['players'][0]==dict(player_id='h7',name='Player 7',shirt_number='7',position='MF',started=True,minutes_played=45)
+    assert [e['player_id'] for e in exported['events']]==['h7','h7','h7','h9',None]
+    # The same minutes typed against a 30-second clip give no rate.
+    clip=save_review(tmp_path/'clip.json',MANIFEST,dict(body,revision=0,coverage=[[0,30]],events=[event()]))['summary']
+    assert clip['per_90']['supported'] is False and 'minutes long' in clip['per_90']['reason']
+
+
+@pytest.mark.parametrize('lineups',[dict(home=[lineup('a','Same'),lineup('b','same ')]),dict(home=[lineup('a','A'),lineup('a','B')]),
+    dict(home=[lineup('a','A',number='123')]),dict(home=[lineup('a','A',minutes=200)]),dict(home=[lineup('a','')]),
+    dict(home=[lineup('a','A',started='yes')]),dict(reserves=[]),dict(home=[lineup(str(i),f'P{i}') for i in range(41)])])
+def test_invalid_lineups_do_not_persist(tmp_path,lineups):
+    path=tmp_path/'review.json'
+    with pytest.raises(ValueError):save_review(path,MANIFEST,dict(payload(),lineups=lineups))
+    assert not path.exists()
+
+
 def test_approved_export_is_versioned_and_leaves_out_drafts(tmp_path):
     from workers.video.event_review import approved_export
     body=payload()

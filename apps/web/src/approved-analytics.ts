@@ -65,8 +65,12 @@ function comparison(saved: Review, first: Side): string[] {
   ];
 }
 
-const playerLine = (saved: Review, player: Review["summary"]["players"][number]) =>
-  `${player.player} (${saved.teams[player.team]}): ${plural(player.event_count, "approved event")} · ${Object.entries(player.counts).map(([type, total]) => `${type} ${total}`).join(", ")}`;
+function playerLine(saved: Review, player: Review["summary"]["players"][number]) {
+  const about = [saved.teams[player.team], player.position, player.minutes != null ? `${n(player.minutes)} min` : null].filter(Boolean).join(", ");
+  const counts = Object.entries(player.counts).map(([type, total]) => `${type} ${total}`).join(", ");
+  const per90 = player.per_90 ? ` · per 90 minutes: ${Object.entries(player.per_90).map(([type, value]) => `${type} ${n(value)}`).join(", ")}` : "";
+  return `${player.number ? `${player.number} · ` : ""}${player.player} (${about}): ${plural(player.event_count, "approved event")}${counts ? ` · ${counts}` : ""}${per90}`;
+}
 
 /**
  * The value for one catalogue entry, or null when approved events cannot supply it at all
@@ -101,8 +105,8 @@ export function approvedMetric(id: string, saved: Review, ownSide: Side): Metric
       return { state: "calculated", lines: [`${saved.teams.home} – ${saved.teams.away}`, ...comparison(saved, "home")] };
     }
     case "key-players": {
-      if (!s.players.length) return unavailable("No approved event names a player. Type a player on each event under Review.");
-      const ranked = [...s.players].sort((a, b) => b.event_count - a.event_count);
+      const ranked = s.players.filter(player => player.event_count > 0).sort((a, b) => b.event_count - a.event_count);
+      if (!ranked.length) return unavailable("No approved event names a player. Type a player on each event under Review.");
       return { state: "partial", lines: ranked.slice(0, 3).map(player => playerLine(saved, player)),
         note: "Ranked by number of approved events only. Player names are typed by the reviewer, not checked against a roster. In-game problems are not calculated." };
     }
@@ -131,10 +135,12 @@ export function approvedMetric(id: string, saved: Review, ownSide: Side): Metric
       return own && opponent ? { state: "calculated", lines } : { state: "partial", lines, note: `Only ${own ? ownName : opponentName} has approved records, so there is nothing to compare yet.` };
     }
     case "player-statistics": {
-      if (!s.players.length) return unavailable("No approved event names a player. Type a player on each event under Review.");
+      if (!s.players.length) return unavailable("No approved event names a player and no line-up is listed. Type a player on each event, or list the line-ups, under Review.");
       const ranked = [...s.players].sort((a, b) => b.event_count - a.event_count);
-      return { state: "partial", lines: [`${plural(s.players.length, "named player")} with approved events in this clip`, ...ranked.slice(0, 5).map(player => playerLine(saved, player))],
-        note: `${ranked.length > 5 ? `Showing 5 of ${ranked.length}; all are listed under Review. ` : ""}This clip only. Season performance needs saved matches over time, and names are reviewer labels, not a verified roster.` };
+      const active = ranked.filter(player => player.event_count > 0).length, listed = ranked.filter(player => player.listed).length;
+      const rates = s.per_90 ? (s.per_90.supported ? `Rates per 90 minutes are given for listed players with at least ${s.per_90.min_minutes} minutes. ` : `Rates per 90 minutes are not given: ${s.per_90.reason} `) : "";
+      return { state: "partial", lines: [`${plural(active, "player")} with approved events${listed ? ` · ${plural(listed, "player")} listed in the line-ups` : ""}`, ...ranked.slice(0, 5).map(player => playerLine(saved, player))],
+        note: `${ranked.length > 5 ? `Showing 5 of ${ranked.length}; all are listed under Review. ` : ""}${rates}This video only. Season performance needs saved matches over time, and names are reviewer labels, not a verified roster.` };
     }
     case "progressive-passes": {
       const lines = SIDES.flatMap(side => {

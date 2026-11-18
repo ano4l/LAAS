@@ -5,7 +5,10 @@ import { clock } from "./format";
 import { Popover } from "./ui";
 
 /** Model analysis of real footage, as opposed to the synthetic interface demo. */
-export const isModelRun = (run: LibraryRun) => run.engine === "yolo_bytetrack" || run.metrics.data_quality?.mode === "yolo_bytetrack";
+/** A video stored for tagging by hand: real footage, but with no detection or tracking run on it. */
+export const isReviewOnly = (run: LibraryRun) => run.engine === "review_only";
+/** Real footage, as opposed to a synthetic interface demo. */
+export const isModelRun = (run: LibraryRun) => run.engine === "yolo_bytetrack" || run.metrics.data_quality?.mode === "yolo_bytetrack" || isReviewOnly(run);
 
 export const matchesClip = (run: LibraryRun, query: string) => `${run.metadata.filename} ${run.run_id}`.toLowerCase().includes(query.trim().toLowerCase());
 
