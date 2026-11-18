@@ -1,7 +1,8 @@
 import { useId, useMemo, useState } from "react";
 import { analyticsAreas, requiredFilters } from "./analytics-requirements";
 import { approvedMetric, type MetricState, type MetricValue, type Side } from "./approved-analytics";
-import { num, secs } from "./format";
+import { num, secs, sentence, words } from "./format";
+import { PitchPicker } from "./PitchPicker";
 import type { Review } from "./ReviewPanel";
 import { DataTable, Disclosure, EmptyState, Field } from "./ui";
 
@@ -37,6 +38,8 @@ export function AnalyticsDashboard({ saved, unsaved, onReview }: Props) {
   const totalShown = analyticsAreas.reduce((sum, area) => sum + shown(area.id), 0);
   const matches = active.metrics.filter(metric => metric.label.toLowerCase().includes(query.trim().toLowerCase()));
   const s = saved?.summary;
+  const approvedShots = saved?.events.filter(event => event.review_status === "approved" && event.type === "shot") ?? [];
+  const placedShots = approvedShots.filter(event => event.location);
 
   return (
     <section className="stack" aria-labelledby={instanceId + "-title"}>
@@ -121,6 +124,23 @@ export function AnalyticsDashboard({ saved, unsaved, onReview }: Props) {
         <EmptyState title={`No matching metrics in ${active.title}`} action={<button type="button" className="btn btn--secondary btn--sm" onClick={() => setQuery("")}>Clear search</button>}>
           Try another metric name or select a different module.
         </EmptyState>
+      )}
+
+      {active.id === "match" && placedShots.length > 0 && saved && (
+        <div className="stack stack--sm">
+          <h4>Shot map</h4>
+          <p className="note">
+            {placedShots.length} of {approvedShots.length} approved {approvedShots.length === 1 ? "shot has" : "shots have"} a location. Each is where the reviewer clicked on a drawn 105 × 68 m pitch, with left and right as the camera shows them. A filled circle is a goal; a line shows where the shot went, when that was placed.
+          </p>
+          <PitchPicker label={`Shot map: ${placedShots.length} approved shots placed by the reviewer. They are listed below the pitch.`}
+            marks={placedShots.map(event => ({ key: event.id, at: event.location!, to: event.end_location, tone: event.team, filled: event.outcome === "goal", title: `${saved.teams[event.team]} · ${words(event.outcome)} · ${secs(event.timestamp_seconds)}` }))} />
+          <p className="note pitchpick__legend"><span><i className="pitchpick__key pitchpick__key--home" />{saved.teams.home}</span><span><i className="pitchpick__key pitchpick__key--away" />{saved.teams.away}</span></p>
+          <ul className="itemlist">
+            {placedShots.map(event => (
+              <li key={event.id}><span><span className="mono">{secs(event.timestamp_seconds)}</span> · {saved.teams[event.team]} · {sentence(event.outcome)}{event.player ? ` · ${event.player}` : ""} · {num(event.location!.x)} m from the left goal line, {num(event.location!.y)} m from the top touchline</span></li>
+            ))}
+          </ul>
+        </div>
       )}
 
       {s?.definitions && (

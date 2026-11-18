@@ -136,6 +136,14 @@ export function approvedMetric(id: string, saved: Review, ownSide: Side): Metric
       return { state: "partial", lines: [`${plural(s.players.length, "named player")} with approved events in this clip`, ...ranked.slice(0, 5).map(player => playerLine(saved, player))],
         note: `${ranked.length > 5 ? `Showing 5 of ${ranked.length}; all are listed under Review. ` : ""}This clip only. Season performance needs saved matches over time, and names are reviewer labels, not a verified roster.` };
     }
+    case "progressive-passes": {
+      const lines = SIDES.flatMap(side => {
+        const progression = s.teams[side]?.progression;
+        return progression && progression.passes_with_direction ? [`${saved.teams[side]}: ${n(progression.progressive_passes ?? 0)} progressive of ${plural(progression.passes_with_direction, "pass", "passes")} with a start, an end and a direction of play`] : [];
+      });
+      if (!lines.length) return unavailable("No approved pass has a start point, an end point and a recorded direction of play. Place passes on the pitch under Review and set the direction of play for the period.");
+      return { state: "partial", lines, note: `${s.definitions?.progressive_passes ?? ""} This clip only: ranking players across a competition needs other players’ data.`.trim() };
+    }
     default: return null;
   }
 }

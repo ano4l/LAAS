@@ -228,6 +228,13 @@ def create_gateway(volume, analyze, access_key, root=Path("/jobs"), call_lookup=
             path,manifest=review_location(run_id)
             return load_review(path,manifest)
 
+    @app.get('/runs/{run_id}/review/approved-events',dependencies=[Depends(authorized)])
+    def get_approved_events(run_id:str):
+        from workers.video.event_review import load_review,approved_export
+        with review_lock:
+            path,manifest=review_location(run_id)
+            return approved_export(load_review(path,manifest),manifest)
+
     @app.get('/runs/{run_id}/sequence-context',dependencies=[Depends(authorized)])
     def get_sequence_context(run_id:str):
         from workers.video.sequence_context import load_context

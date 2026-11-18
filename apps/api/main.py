@@ -309,6 +309,14 @@ def get_review(run_id:str):
         return load_review(path,manifest)
 
 
+@app.get('/runs/{run_id}/review/approved-events')
+def get_approved_events(run_id:str):
+    from workers.video.event_review import load_review,approved_export
+    with REVIEW_LOCK:
+        path,manifest=_review_location(run_id)
+        return approved_export(load_review(path,manifest),manifest)
+
+
 @app.post('/runs/{run_id}/review')
 def put_review(run_id:str,payload:dict):
     from workers.video.event_review import save_review,ReviewConflict

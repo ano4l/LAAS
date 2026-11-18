@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { AlertTriangle, ArrowDownToLine, Clock3, Save } from "lucide-react";
 import { num, secs, sentence, words } from "./format";
+import { PITCH_LENGTH, PITCH_WIDTH, PitchPicker, type PitchMark, type PitchPoint } from "./PitchPicker";
 import { usePlayback } from "./playback";
 import { DataTable, Disclosure, EmptyState, EvidenceChip, Field, Pager, Panel, WatchButton } from "./ui";
 
@@ -12,7 +13,15 @@ const outcomes = {
 type EventType = keyof typeof outcomes;
 type Team = "home" | "away";
 type Approval = "draft" | "approved";
-type Annotation = { id: string; timestamp_seconds: number; type: EventType; team: Team; player: string | null; outcome: string; review_status: Approval; notes: string };
+// Period, location and the rest were added later; a review saved before then has none of them.
+export type Annotation = { id: string; timestamp_seconds: number; type: EventType; team: Team; player: string | null; outcome: string; review_status: Approval; notes: string;
+  period?: number; location?: PitchPoint | null; end_location?: PitchPoint | null; body_part?: string | null; situation?: string | null; receiver?: string | null };
+type PeriodInfo = { home_attacks: "left" | "right" | null; reference_video_seconds: number | null; reference_clock_seconds: number | null };
+const PERIOD_NAMES: Record<string, string> = { 1: "First half", 2: "Second half", 3: "Extra time, first half", 4: "Extra time, second half" };
+const NO_PERIOD: PeriodInfo = { home_attacks: null, reference_video_seconds: null, reference_clock_seconds: null };
+const BODY_PARTS = ["foot", "head", "other"], SITUATIONS = ["open_play", "free_kick", "corner", "penalty", "throw_in", "goal_kick", "kick_off"];
+const hasEndPoint = (type: EventType) => type === "pass" || type === "shot" || type === "dribble";
+const hasBodyPart = (type: EventType) => type === "pass" || type === "shot";
 type Possession = { id: string; start_seconds: number; end_seconds: number; team: Team | "unknown"; review_status: Approval };
 type TeamSummary = { name: string; event_count: number; passes: { recorded: number; completed: number; known_outcomes: number; outcome_coverage_pct: number | null; completion_pct: number | null };
   // Fields marked optional were added in summary version 2; a review served by an older server lacks them.
@@ -20,13 +29,14 @@ type TeamSummary = { name: string; event_count: number; passes: { recorded: numb
   tackles: { recorded: number; won: number; lost?: number; known_outcomes?: number; win_pct?: number | null }; interceptions: number;
   dribbles: { recorded: number; successful: number; unsuccessful?: number; known_outcomes?: number; success_pct?: number | null };
   duels: { recorded: number; won: number; lost?: number; known_outcomes?: number; win_pct?: number | null };
-  turnovers?: { conceded: number; incomplete_passes: number; unsuccessful_dribbles: number; won: number; tackles_won: number } };
+  turnovers?: { conceded: number; incomplete_passes: number; unsuccessful_dribbles: number; won: number; tackles_won: number };
+  progression?: { shots_located: number; passes_located: number; passes_with_direction: number; progressive_passes: number | null } };
 export type { TeamSummary };
 type ReviewSummary = { scope: string; summary_version?: number; approved_events: number; draft_events: number; reviewed_seconds: number; reviewed_video_pct: number | null;
   definitions?: Record<string, string>;
   teams: { home: TeamSummary | null; away: TeamSummary | null }; players: { team: Team; player: string; event_count: number; counts: Record<string, number>; outcomes?: Record<string, Record<string, number>> }[];
   possession: { home_seconds: number; away_seconds: number; unknown_seconds: number; home_share_pct: number | null; away_share_pct: number | null; known_coverage_pct: number | null } };
-export type Review = { schema_version: string; run_id: string; revision: number; teams: { home: string; away: string }; coverage: [number, number][];
+export type Review = { schema_version: string; run_id: string; revision: number; teams: { home: string; away: string }; periods?: Record<string, PeriodInfo>; coverage: [number, number][];
   events: Annotation[]; possession_intervals: Possession[]; summary: ReviewSummary };
 type Props = { runId: string; duration: number; api: string; authHeaders: () => Record<string, string>; onSaved?: (saved: Review | null) => void; onUnsaved?: (unsaved: boolean) => void };
 type CoverageForm = { start: string; end: string };
@@ -41,9 +51,9 @@ export function proposeReviewEvent(runId: string, draft: { timestamp_seconds: nu
   proposal = { runId, ...draft };
   window.dispatchEvent(new Event(PROPOSAL_EVENT));
 }
-const freshEvent = (): Annotation => ({ id: crypto.randomUUID(), timestamp_seconds: 0, type: "pass", team: "home", player: null, outcome: "unknown", review_status: "draft", notes: "" });
+const freshEvent = (): Annotation => ({ id: crypto.randomUUID(), timestamp_seconds: 0, type: "pass", team: "home", player: null, outcome: "unknown", review_status: "draft", notes: "", period: 1, location: null, end_location: null, body_part: null, situation: null, receiver: null });
 const count = (value: number | null) => value === null ? "Unknown" : value.toLocaleString(undefined, { maximumFractionDigits: 2 });
-const payload = (review: Review) => ({ revision: review.revision, teams: review.teams, coverage: review.coverage, events: review.events, possession_intervals: review.possession_intervals });
+const payload = (review: Review) => ({ revision: review.revision, teams: review.teams, periods: review.periods, coverage: review.coverage, events: review.events, possession_intervals: review.possession_intervals });
 const hasUnsavedDraft = (draft: ReviewDraft) => JSON.stringify(payload(draft.review)) !== JSON.stringify(payload(draft.saved)) || draft.eventDirty || Boolean(draft.coverage.start || draft.coverage.end || draft.interval.start || draft.interval.end || draft.interval.approved || draft.interval.team !== "unknown");
 // The warning belongs to the tab, not the currently mounted run: other runs may hold drafts.
 const warnForReviewDrafts = (event: BeforeUnloadEvent) => {
@@ -65,6 +75,7 @@ export function ReviewPanel({ runId, duration, api, authHeaders, onSaved, onUnsa
   const [event, setEvent] = useState<Annotation>(freshEvent);
   const [editing, setEditing] = useState(false);
   const [eventDirty, setEventDirty] = useState(false);
+  const [placing, setPlacing] = useState<"start" | "end">("start");
   const [coverage, setCoverage] = useState({ start: "", end: "" });
   const [interval, setInterval] = useState({ start: "", end: "", team: "unknown" as Possession["team"], approved: false });
   const [eventSearch, setEventSearch] = useState("");
@@ -147,7 +158,38 @@ export function ReviewPanel({ runId, duration, api, authHeaders, onSaved, onUnsa
     const link = document.createElement("a"); link.href = url; link.download = `${runId}-saved-review-revision-${saved.revision}.json`; link.click();
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
-  function resetEvent() { setEvent(freshEvent()); setEditing(false); setEventDirty(false); }
+  function resetEvent() { setEvent(freshEvent()); setEditing(false); setEventDirty(false); setPlacing("start"); }
+  async function downloadApproved() {
+    if (!saved || pending) return;
+    try {
+      const response = await fetch(`${api}/runs/${encodeURIComponent(runId)}/review/approved-events`, { headers: authHeaders() });
+      if (!response.ok) throw new Error(`The approved-events export could not be made (${response.status}).`);
+      const url = URL.createObjectURL(await response.blob());
+      const link = document.createElement("a"); link.href = url; link.download = `${runId}-approved-events-revision-${saved.revision}.json`; link.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (cause) { setError(String(cause instanceof Error ? cause.message : cause)); }
+  }
+  // A new event type keeps only the details that type can have.
+  function retype(type: EventType) {
+    changeEvent({ type, outcome: "unknown", review_status: "draft", end_location: hasEndPoint(type) ? event.end_location : null,
+      body_part: hasBodyPart(type) ? event.body_part : null, situation: hasBodyPart(type) ? event.situation : null, receiver: type === "pass" ? event.receiver : null });
+    if (!hasEndPoint(type)) setPlacing("start");
+  }
+  function place(point: PitchPoint) {
+    if (placing === "end" && hasEndPoint(event.type)) changeEvent({ end_location: point });
+    else { changeEvent({ location: point }); if (hasEndPoint(event.type) && !event.end_location) setPlacing("end"); }
+  }
+  const typed = (which: "location" | "end_location", axis: "x" | "y", value: string) => {
+    const current = event[which] ?? { x: PITCH_LENGTH / 2, y: PITCH_WIDTH / 2 };
+    changeEvent({ [which]: value.trim() === "" || !Number.isFinite(Number(value)) ? null : { ...current, [axis]: Math.max(0, Math.min(axis === "x" ? PITCH_LENGTH : PITCH_WIDTH, Number(value))) } });
+  };
+  const periodOf = (id: number | string) => review?.periods?.[String(id)] ?? NO_PERIOD;
+  const setPeriod = (id: string, update: Partial<PeriodInfo>) => { if (review) edit({ periods: { ...review.periods, [id]: { ...periodOf(id), ...update } } }); };
+  // Which goal is whose depends on the direction of play recorded for the event's period.
+  const direction = periodOf(event.period ?? 1).home_attacks;
+  const ends = !review || !direction ? ["Left of the camera view", "Right of the camera view"]
+    : direction === "right" ? [`${review.teams.home} goal`, `${review.teams.away} goal`] : [`${review.teams.away} goal`, `${review.teams.home} goal`];
+  const formMarks: PitchMark[] = event.location ? [{ key: "form", at: event.location, to: event.end_location, filled: true, title: "This event" }] : [];
   function changeEvent(update: Partial<Annotation>) { setEvent(current => ({ ...current, ...update, review_status: update.review_status ?? "draft" })); setEventDirty(true); }
   function applyEvent(e: FormEvent) {
     e.preventDefault(); if (!review) return;
@@ -176,6 +218,7 @@ export function ReviewPanel({ runId, duration, api, authHeaders, onSaved, onUnsa
         <span className={`chip ${dirty || formDirty || conflict ? "chip--draft" : "chip--plain"}`} role="status">{status}</span>
         <button type="button" className="btn btn--primary btn--sm" onClick={save} disabled={pending || !dirty || eventDirty || conflict}><Save size={14} aria-hidden="true" /> Save review</button>
         <button type="button" className="btn btn--secondary btn--sm" onClick={downloadSaved} disabled={!saved || pending} aria-label="Download saved review JSON"><ArrowDownToLine size={14} aria-hidden="true" /> Saved review JSON</button>
+        <button type="button" className="btn btn--secondary btn--sm" onClick={downloadApproved} disabled={!saved || pending} title="Saved, approved events only, in a versioned format for other tools. Unsaved edits and drafts are left out."><ArrowDownToLine size={14} aria-hidden="true" /> Approved events JSON</button>
       </>}
     >
       <div aria-busy={pending} className="stack">
@@ -199,7 +242,7 @@ export function ReviewPanel({ runId, duration, api, authHeaders, onSaved, onUnsa
                   <button type="button" className="btn btn--secondary" onClick={() => changeEvent({ timestamp_seconds: Math.max(0, Math.min(duration - .001, playback.getTime())) })}><Clock3 size={15} aria-hidden="true" /> Use video time</button>
                 </div>
                 <Field label="Event type">
-                  <select value={event.type} onChange={e => changeEvent({ type: e.target.value as EventType, outcome: "unknown", review_status: "draft" })}>{Object.keys(outcomes).map(type => <option key={type} value={type}>{sentence(type)}</option>)}</select>
+                  <select value={event.type} onChange={e => retype(e.target.value as EventType)}>{Object.keys(outcomes).map(type => <option key={type} value={type}>{sentence(type)}</option>)}</select>
                 </Field>
                 <Field label="Team">
                   <select value={event.team} onChange={e => changeEvent({ team: e.target.value as Team })}>{(["home", "away"] as const).map(team => <option key={team} value={team}>{review.teams[team] || team}</option>)}</select>
@@ -210,6 +253,46 @@ export function ReviewPanel({ runId, duration, api, authHeaders, onSaved, onUnsa
                 <Field label="Player (optional)">
                   <input maxLength={100} value={event.player ?? ""} onChange={e => changeEvent({ player: e.target.value })} placeholder="Verified name or manual label" />
                 </Field>
+                <Field label="Period">
+                  <select value={event.period ?? 1} onChange={e => changeEvent({ period: Number(e.target.value) })}>{Object.entries(PERIOD_NAMES).map(([id, name]) => <option key={id} value={id}>{name}</option>)}</select>
+                </Field>
+                {event.type === "pass" && (
+                  <Field label="Receiver (optional)">
+                    <input maxLength={100} value={event.receiver ?? ""} onChange={e => changeEvent({ receiver: e.target.value || null })} placeholder="Who the pass went to" />
+                  </Field>
+                )}
+                {hasBodyPart(event.type) && <>
+                  <Field label="Body part (optional)">
+                    <select value={event.body_part ?? ""} onChange={e => changeEvent({ body_part: e.target.value || null })}><option value="">Not recorded</option>{BODY_PARTS.map(part => <option key={part} value={part}>{sentence(part)}</option>)}</select>
+                  </Field>
+                  <Field label="Situation (optional)">
+                    <select value={event.situation ?? ""} onChange={e => changeEvent({ situation: e.target.value || null })}><option value="">Not recorded</option>{SITUATIONS.map(situation => <option key={situation} value={situation}>{sentence(situation)}</option>)}</select>
+                  </Field>
+                </>}
+              </div>
+              <div className="stack stack--sm">
+                <h4>Where on the pitch (optional)</h4>
+                <p className="note">
+                  Click the pitch where it happened, with left and right as the camera shows them. {hasEndPoint(event.type) ? "The first click sets the start; the next sets where it ended." : ""} This is your judgement by eye on a drawn 105 × 68 m pitch, not a measurement.
+                </p>
+                {hasEndPoint(event.type) && (
+                  <div className="row" role="group" aria-label="Which point the next click places">
+                    <button type="button" className="btn btn--secondary btn--sm" aria-pressed={placing === "start"} onClick={() => setPlacing("start")}>Place start</button>
+                    <button type="button" className="btn btn--secondary btn--sm" aria-pressed={placing === "end"} onClick={() => setPlacing("end")}>Place end</button>
+                  </div>
+                )}
+                <PitchPicker marks={formMarks} onPick={place} leftLabel={ends[0]} rightLabel={ends[1]}
+                  label={`Pitch for placing this event. ${event.location ? `Start at ${num(event.location.x)} m from the left goal line and ${num(event.location.y)} m from the top touchline${event.end_location ? `; end at ${num(event.end_location.x)} m and ${num(event.end_location.y)} m` : ""}.` : "No location placed."} The typed fields below do the same without a pointer.`} />
+                <div className="formgrid">
+                  <Field label="Start: metres from the left goal line"><input type="number" min="0" max={PITCH_LENGTH} step="0.1" value={event.location?.x ?? ""} onChange={e => typed("location", "x", e.target.value)} /></Field>
+                  <Field label="Start: metres from the top touchline"><input type="number" min="0" max={PITCH_WIDTH} step="0.1" value={event.location?.y ?? ""} onChange={e => typed("location", "y", e.target.value)} /></Field>
+                  {hasEndPoint(event.type) && <>
+                    <Field label="End: metres from the left goal line"><input type="number" min="0" max={PITCH_LENGTH} step="0.1" value={event.end_location?.x ?? ""} onChange={e => typed("end_location", "x", e.target.value)} /></Field>
+                    <Field label="End: metres from the top touchline"><input type="number" min="0" max={PITCH_WIDTH} step="0.1" value={event.end_location?.y ?? ""} onChange={e => typed("end_location", "y", e.target.value)} /></Field>
+                  </>}
+                </div>
+                {(event.location || event.end_location) && <div><button type="button" className="btn btn--quiet btn--sm" onClick={() => { changeEvent({ location: null, end_location: null }); setPlacing("start"); }}>Clear location</button></div>}
+                {!direction && <p className="note">Which goal each team attacks in this period is not recorded. Set it under “Periods” below so locations can be read as attacking or defending.</p>}
               </div>
               <p className="note">Team uses your own labels (“{review.teams.home || "Home"}” and “{review.teams.away || "Away"}”), which you can rename under Team labels below. They are separate from the model’s Kit A / Kit B groups and do not map onto them.</p>
               <Disclosure summary={`Notes (optional)${event.notes ? " · added" : ""}`}>
@@ -237,12 +320,12 @@ export function ReviewPanel({ runId, duration, api, authHeaders, onSaved, onUnsa
                     {eventMatches.slice(currentEventPage * 8, (currentEventPage + 1) * 8).map(item => (
                       <tr key={item.id}>
                         <td><WatchButton at={item.timestamp_seconds} describe="View annotation" /></td>
-                        <td data-label="Event"><div>{sentence(item.type)} · {words(item.outcome)}{item.notes && <small>{item.notes}</small>}</div></td>
+                        <td data-label="Event"><div>{sentence(item.type)} · {words(item.outcome)}<small>{PERIOD_NAMES[item.period ?? 1]} · {item.location ? `placed on the pitch${item.end_location ? " with an end point" : ""}` : "no location"}</small>{item.notes && <small>{item.notes}</small>}</div></td>
                         <td data-label="Team / player"><div>{review.teams[item.team]}<small>{item.player || "Player not identified"}</small></div></td>
                         <td data-label="Status">{item.review_status === "approved" ? <EvidenceChip level="reviewed" title="Approved by a reviewer" /> : <span className="chip chip--draft">Draft</span>}</td>
                         <td data-label="Actions">
                           <div className="row">
-                            <button type="button" className="btn btn--secondary btn--sm" disabled={eventDirty} onClick={() => { setEvent({ ...item }); setEditing(true); }}>Edit</button>
+                            <button type="button" className="btn btn--secondary btn--sm" disabled={eventDirty} onClick={() => { setEvent({ ...item }); setEditing(true); setPlacing("start"); }}>Edit</button>
                             <button type="button" className="btn btn--secondary btn--sm" onClick={() => edit({ events: review.events.map(other => other.id === item.id ? { ...other, review_status: other.review_status === "approved" ? "draft" : "approved" } : other) })}>{item.review_status === "approved" ? "Return to draft" : "Approve event"}</button>
                             <button type="button" className="btn btn--secondary btn--sm btn--danger" onClick={() => { edit({ events: review.events.filter(other => other.id !== item.id) }); if (event.id === item.id) resetEvent(); }}>Delete event</button>
                           </div>
@@ -262,6 +345,32 @@ export function ReviewPanel({ runId, duration, api, authHeaders, onSaved, onUnsa
                 {(["home", "away"] as const).map(team => <Field key={team} label={`${team === "home" ? "Home" : "Away"} team name`}><input maxLength={80} required value={review.teams[team]} onChange={e => edit({ teams: { ...review.teams, [team]: e.target.value } })} /></Field>)}
               </div>
               <p>Enter real team names only when verified. These labels are independent of the model's anonymous kit groups.</p>
+            </Disclosure>
+
+            <Disclosure summary="Periods: direction of play and match clock" meta="Optional">
+              <p>Record which goal {review.teams.home} attack in each period, so a location can be read as attacking or defending. To give events a match clock, enter one moment where you can read the clock in the video.</p>
+              {Object.entries(PERIOD_NAMES).map(([id, name]) => {
+                const info = periodOf(id), clock = info.reference_clock_seconds;
+                const setClock = (minutes: number, seconds: number) => setPeriod(id, { reference_clock_seconds: minutes * 60 + seconds, reference_video_seconds: info.reference_video_seconds ?? 0 });
+                return (
+                  <fieldset key={id} className="stack stack--sm">
+                    <legend><strong>{name}</strong></legend>
+                    <div className="formgrid">
+                      <Field label={`${review.teams.home} attack towards`}>
+                        <select value={info.home_attacks ?? ""} onChange={e => setPeriod(id, { home_attacks: (e.target.value || null) as PeriodInfo["home_attacks"] })}>
+                          <option value="">Not recorded</option><option value="right">The right-hand goal</option><option value="left">The left-hand goal</option>
+                        </select>
+                      </Field>
+                      <Field label="At video time (seconds)">
+                        <input type="number" min="0" max={duration} step="any" value={info.reference_video_seconds ?? ""} onChange={e => setPeriod(id, e.target.value.trim() === "" ? { reference_video_seconds: null, reference_clock_seconds: null } : { reference_video_seconds: Number(e.target.value), reference_clock_seconds: clock ?? 0 })} />
+                      </Field>
+                      <Field label="the clock read: minutes"><input type="number" min="0" max="239" step="1" value={clock === null ? "" : Math.floor(clock / 60)} onChange={e => setClock(Number(e.target.value) || 0, clock === null ? 0 : clock % 60)} /></Field>
+                      <Field label="the clock read: seconds"><input type="number" min="0" max="59" step="1" value={clock === null ? "" : Math.round(clock % 60)} onChange={e => setClock(clock === null ? 0 : Math.floor(clock / 60), Math.max(0, Math.min(59, Number(e.target.value) || 0)))} /></Field>
+                    </div>
+                  </fieldset>
+                );
+              })}
+              <p>Leave the video time empty for a period with no clock. The direction of play is yours to judge from the footage; nothing here is detected.</p>
             </Disclosure>
 
             <Disclosure summary="Reviewed footage coverage" meta="Optional">
