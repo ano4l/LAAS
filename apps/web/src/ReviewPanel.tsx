@@ -28,6 +28,13 @@ type PossessionForm = CoverageForm & { team: Possession["team"]; approved: boole
 type ReviewDraft = { review: Review; saved: Review; event: Annotation; editing: boolean; eventDirty: boolean; coverage: CoverageForm; interval: PossessionForm };
 // Kept in this tab's memory, scoped to API and run. Run navigation must not discard annotation work.
 const reviewDrafts = new Map<string, ReviewDraft>();
+// A candidate a person chose to draft elsewhere in the app. It only fills in the form: applying, saving and approving stay with the reviewer.
+const PROPOSAL_EVENT = "laas:review-proposal";
+let proposal: { runId: string; timestamp_seconds: number; type: string; notes: string } | null = null;
+export function proposeReviewEvent(runId: string, draft: { timestamp_seconds: number; type: string; notes: string }) {
+  proposal = { runId, ...draft };
+  window.dispatchEvent(new Event(PROPOSAL_EVENT));
+}
 const freshEvent = (): Annotation => ({ id: crypto.randomUUID(), timestamp_seconds: 0, type: "pass", team: "home", player: null, outcome: "unknown", review_status: "draft", notes: "" });
 const count = (value: number | null) => value === null ? "Unknown" : value.toLocaleString(undefined, { maximumFractionDigits: 2 });
 const payload = (review: Review) => ({ revision: review.revision, teams: review.teams, coverage: review.coverage, events: review.events, possession_intervals: review.possession_intervals });
@@ -64,6 +71,21 @@ export function ReviewPanel({ runId, duration, api, authHeaders, onSaved, onUnsa
   const eventMatches = review?.events.filter(item => (statusFilter === "all" || item.review_status === statusFilter) && `${item.type} ${item.outcome} ${item.player ?? ""} ${review.teams[item.team]} ${item.notes}`.toLowerCase().includes(eventSearch.trim().toLowerCase())) ?? [];
   const lastEventPage = Math.max(0, Math.ceil(eventMatches.length / 8) - 1);
   const currentEventPage = Math.min(eventPage, lastEventPage);
+  const [proposed, setProposed] = useState(0);
+  useEffect(() => {
+    const notice = () => setProposed(value => value + 1);
+    window.addEventListener(PROPOSAL_EVENT, notice);
+    return () => window.removeEventListener(PROPOSAL_EVENT, notice);
+  }, []);
+  useEffect(() => {
+    if (!review || !proposal || proposal.runId !== runId) return;
+    const { timestamp_seconds, type, notes } = proposal;
+    proposal = null;
+    if (eventDirty) { setError("The event form already holds unapplied work. Apply or cancel it, then choose the possible event again."); return; }
+    setEvent({ ...freshEvent(), timestamp_seconds: Math.max(0, Math.min(duration - .001, timestamp_seconds)), type: type in outcomes ? type as EventType : "pass", notes: notes.slice(0, 1000) });
+    setEditing(false); setEventDirty(true); setError("");
+    // Only a new proposal or a newly loaded review fills the form, not later edits to it.
+  }, [review?.run_id, runId, proposed]);
   useEffect(() => { onSaved?.(saved); }, [saved, onSaved]);
   useEffect(() => { onUnsaved?.(dirty || formDirty); }, [dirty, formDirty, onUnsaved]);
 

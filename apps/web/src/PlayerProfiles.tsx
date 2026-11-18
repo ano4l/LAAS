@@ -4,6 +4,7 @@ import type { AnalysisResult } from "./main";
 import { DASH, num, range, secs, sentence } from "./format";
 import { TeamName, useKits } from "./kits";
 import { PitchBoard } from "./PitchBoard";
+import { candidateName, candidatePlayers } from "./VideoInsights";
 import type { MotionPlayer } from "./SoccerTrackShape";
 import { DataTable, Disclosure, EmptyState, Field, Meter, Panel, StatTile, WatchButton } from "./ui";
 
@@ -131,7 +132,7 @@ export function PlayerProfiles({ result, api, authHeaders, selected, onSelect }:
       fastest: moved.length ? Math.max(...moved.map(row => row.fastest_hop_m_s)) : null,
       bands: banded.length ? BANDS.map(([key]) => banded.reduce((sum, row) => sum + (row.speed_band_seconds?.[key] ?? 0), 0)) : null,
       ownSpells, spellSeconds: ownSpells.reduce((sum, spell) => sum + spell.observed_seconds, 0),
-      events: candidates.filter(event => ids.includes(event.from_track) || ids.includes(event.to_track)).sort((a, b) => a.timestamp_seconds - b.timestamp_seconds),
+      events: candidates.filter(event => (event.from_track !== null && ids.includes(event.from_track)) || (event.to_track !== null && ids.includes(event.to_track))).sort((a, b) => a.timestamp_seconds - b.timestamp_seconds),
     };
   }
 
@@ -326,23 +327,24 @@ export function PlayerProfiles({ result, api, authHeaders, selected, onSelect }:
 
         {own.events.length > 0 && (
           <div className="stack stack--sm">
-            <h4>Possible passes and handovers</h4>
-            <p className="note">Moments where the ball appears to move between this player and another. These are unreviewed candidates from the model, not confirmed events.</p>
+            <h4>Possible events</h4>
+            <p className="note">Possible passes, turnovers, shots, tackles, duels and dribbles this player appears in. These are unreviewed prompts from rules over the tracking, not confirmed events, and they miss most real ones.</p>
             <ul className="itemlist">
               {own.events.slice(0, 12).map(event => {
-                const gave = trackIds.includes(event.from_track), partner = gave ? event.to_track : event.from_track;
+                const gave = event.from_track !== null && trackIds.includes(event.from_track), partner = gave ? event.to_track : event.from_track;
+                const transfer = event.type === "possible_pass" || event.type === "possible_turnover";
                 return (
                   <li key={event.id}>
-                    <span><span className="mono">{secs(event.timestamp_seconds)}</span> · {sentence(event.type)} · {gave ? "to" : "from"} {nameOf(partner)}</span>
+                    <span><span className="mono">{secs(event.timestamp_seconds)}</span> · {candidateName(event.type)} · {transfer && partner ? `${gave ? "to" : "from"} ${nameOf(partner)}` : candidatePlayers(event, nameOf)}</span>
                     <span className="row">
                       <WatchButton at={event.start_seconds} label="Watch" describe={`Watch the candidate at ${secs(event.timestamp_seconds)}`} />
-                      {byId.has(partner) && !trackIds.includes(partner) && <button type="button" className="btn btn--secondary btn--sm" onClick={() => onSelect(partner)}>Open {partner}</button>}
+                      {partner && byId.has(partner) && !trackIds.includes(partner) && <button type="button" className="btn btn--secondary btn--sm" onClick={() => onSelect(partner)}>Open {partner}</button>}
                     </span>
                   </li>
                 );
               })}
             </ul>
-            {own.events.length > 12 && <p className="note">Showing the first 12 of {own.events.length}. All candidates are listed under Possession.</p>}
+            {own.events.length > 12 && <p className="note">Showing the first 12 of {own.events.length}. All of them are listed under Ball.</p>}
           </div>
         )}
 
