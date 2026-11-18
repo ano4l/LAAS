@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CircleDot, ClipboardCheck, FolderDown, LayoutDashboard, Rewind, FastForward, Shapes, Timer, Users } from "lucide-react";
+import { BarChart3, CircleDot, ClipboardCheck, FolderDown, LayoutDashboard, Rewind, FastForward, Shapes, Timer, Users } from "lucide-react";
 import type { AnalysisResult } from "./main";
 import type { Review } from "./ReviewPanel";
 import { Timeline } from "./Timeline";
@@ -13,11 +13,12 @@ import { BallTab } from "./tabs/BallTab";
 import { ShapeTab } from "./tabs/ShapeTab";
 import { PlayersTab } from "./tabs/PlayersTab";
 import { ReviewTab } from "./tabs/ReviewTab";
+import { AnalyticsTab } from "./tabs/AnalyticsTab";
 import { FilesTab } from "./tabs/FilesTab";
 
-export type TabId = "summary" | "possession" | "ball" | "shape" | "players" | "review" | "files";
+export type TabId = "summary" | "possession" | "ball" | "shape" | "players" | "analytics" | "review" | "files";
 
-const TAB_IDS: TabId[] = ["summary", "possession", "ball", "shape", "players", "review", "files"];
+const TAB_IDS: TabId[] = ["summary", "possession", "ball", "shape", "players", "analytics", "review", "files"];
 const readHash = (): TabId => {
   const hash = window.location.hash.slice(1) as TabId;
   return TAB_IDS.includes(hash) ? hash : "summary";
@@ -101,6 +102,7 @@ function ClipWorkspace({ result, active, openRequest, api, authHeaders, onRefres
     { id: "ball", label: "Ball", icon: CircleDot, count: insights?.candidates.length ? insights.candidates.length : undefined },
     { id: "shape", label: "Shape", icon: Shapes },
     { id: "players", label: "Players", icon: Users },
+    { id: "analytics", label: "Analytics", icon: BarChart3 },
     { id: "review", label: "Review", icon: ClipboardCheck, count: saved?.summary.approved_events ? saved.summary.approved_events : undefined },
     { id: "files", label: "Files", icon: FolderDown },
   ];
@@ -150,6 +152,7 @@ function ClipWorkspace({ result, active, openRequest, api, authHeaders, onRefres
             <TabPanel id="ball" idBase="clip" active={tab === "ball"}><BallTab {...tabProps} /></TabPanel>
             <TabPanel id="shape" idBase="clip" active={tab === "shape"}><ShapeTab {...tabProps} media={media} /></TabPanel>
             <TabPanel id="players" idBase="clip" active={tab === "players"}><PlayersTab {...tabProps} api={api} authHeaders={authHeaders} /></TabPanel>
+            <TabPanel id="analytics" idBase="clip" active={tab === "analytics"}><AnalyticsTab {...tabProps} reviewUnsaved={reviewUnsaved} /></TabPanel>
             {/* Review stays mounted from the start: it loads the saved review that Summary and the timeline read. */}
             <TabPanel id="review" idBase="clip" active={tab === "review"}>
               <ReviewTab {...tabProps} api={api} authHeaders={authHeaders} reviewUnsaved={reviewUnsaved} onSaved={setSavedReview} onUnsaved={setReviewUnsaved} />

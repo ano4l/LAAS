@@ -51,6 +51,7 @@ def summarize(state,duration):
     def percentage(a,b):return round(100*a/b,2) if b else None
     teams={}
     players={}
+    player_outcomes={}
     for side in ['home','away']:
         rows=[e for e in events if e['team']==side]
         if not rows:
@@ -58,26 +59,44 @@ def summarize(state,duration):
             continue
         counts=Counter((e['type'],e['outcome']) for e in rows)
         total=lambda kind:sum(n for (k,_),n in counts.items() if k==kind)
+        # Rates divide by records with a known outcome only; an unknown outcome is never counted as a failure.
+        def decided(kind,good,bad,good_key,bad_key,rate_key):
+            return {'recorded':total(kind),good_key:counts[kind,good],bad_key:counts[kind,bad],
+                    'known_outcomes':counts[kind,good]+counts[kind,bad],rate_key:percentage(counts[kind,good],counts[kind,good]+counts[kind,bad])}
+        on_target=counts['shot','goal']+counts['shot','on_target']
+        shots_known=total('shot')-counts['shot','unknown']
         teams[side]=dict(name=state['teams'][side],event_count=len(rows),
             passes=dict(recorded=total('pass'),completed=counts['pass','completed'],
                 known_outcomes=counts['pass','completed']+counts['pass','incomplete'],
                 outcome_coverage_pct=percentage(counts['pass','completed']+counts['pass','incomplete'],total('pass')),
                 completion_pct=percentage(counts['pass','completed'],counts['pass','completed']+counts['pass','incomplete'])),
-            shots=dict(recorded=total('shot'),on_target=counts['shot','goal']+counts['shot','on_target'],goals=counts['shot','goal']),
-            tackles=dict(recorded=total('tackle'),won=counts['tackle','won']),
+            shots=dict(recorded=total('shot'),on_target=on_target,goals=counts['shot','goal'],off_target=counts['shot','off_target'],
+                blocked=counts['shot','blocked'],known_outcomes=shots_known,
+                on_target_pct=percentage(on_target,shots_known),conversion_pct=percentage(counts['shot','goal'],shots_known)),
+            tackles=decided('tackle','won','lost','won','lost','win_pct'),
             interceptions=total('interception'),
-            dribbles=dict(recorded=total('dribble'),successful=counts['dribble','successful']),
-            duels=dict(recorded=total('duel'),won=counts['duel','won']))
+            dribbles=decided('dribble','successful','unsuccessful','successful','unsuccessful','success_pct'),
+            duels=decided('duel','won','lost','won','lost','win_pct'),
+            turnovers=dict(conceded=counts['pass','incomplete']+counts['dribble','unsuccessful'],
+                incomplete_passes=counts['pass','incomplete'],unsuccessful_dribbles=counts['dribble','unsuccessful'],
+                won=total('interception')+counts['tackle','won'],tackles_won=counts['tackle','won']))
         for e in rows:
             if e.get('player'):
                 key=(side,e['player']);counts_player=players.setdefault(key,Counter());counts_player[e['type']]+=1
+                player_outcomes.setdefault(key,{}).setdefault(e['type'],Counter())[e['outcome']]+=1
     possession=Counter()
     for row in state['possession_intervals']:
         if row['review_status']=='approved':possession[row['team']]+=row['end_seconds']-row['start_seconds']
     known=possession['home']+possession['away']
-    return dict(scope='approved_annotations_only',approved_events=len(events),draft_events=len(state['events'])-len(events),
+    return dict(scope='approved_annotations_only',summary_version=2,approved_events=len(events),draft_events=len(state['events'])-len(events),
         reviewed_seconds=round(reviewed,3),reviewed_video_pct=percentage(reviewed,duration),teams=teams,
-        players=[dict(team=side,player=player,event_count=sum(counts.values()),counts=dict(counts)) for (side,player),counts in sorted(players.items())],
+        definitions=dict(
+            scope='Counts of saved, approved records for this video only. They cover what a person recorded, not the whole match.',
+            rates='Each rate divides by records with a known outcome. Records with an unknown outcome are counted as recorded but left out of rates.',
+            shots='On target includes goals. Conversion is goals divided by shots with a known outcome.',
+            turnovers='Possession lost is incomplete passes plus unsuccessful dribbles. Possession won is interceptions plus tackles won. Loose balls, clearances and fouls are not recorded, so neither is a full turnover count.'),
+        players=[dict(team=side,player=player,event_count=sum(counts.values()),counts=dict(counts),
+                      outcomes={kind:dict(outcomes) for kind,outcomes in sorted(player_outcomes[side,player].items())}) for (side,player),counts in sorted(players.items())],
         possession=dict(home_seconds=round(possession['home'],3),away_seconds=round(possession['away'],3),
             unknown_seconds=round(max(0,duration-known),3),home_share_pct=percentage(possession['home'],known),
             away_share_pct=percentage(possession['away'],known),known_coverage_pct=percentage(known,duration)))
