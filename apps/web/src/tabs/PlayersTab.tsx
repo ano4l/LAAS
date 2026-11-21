@@ -7,7 +7,7 @@ import { DASH, num, pct, secs } from "../format";
 import { TeamName } from "../kits";
 import { DataTable, Disclosure, EmptyState, Field, Pager, Panel, StatTile, WatchButton } from "../ui";
 
-export function PlayersTab({ result, api, authHeaders }: ClipTabProps & { api: string; authHeaders: () => Record<string, string> }) {
+export function PlayersTab({ result, saved, api, authHeaders }: ClipTabProps & { api: string; authHeaders: () => Record<string, string> }) {
   const [profile, setProfile] = useState<string | null>(null);
   const summary = result.detection_summary;
   const m = result.metrics.video_measurements;
@@ -48,7 +48,7 @@ export function PlayersTab({ result, api, authHeaders }: ClipTabProps & { api: s
         />
       </div>
 
-      <PlayerProfiles key={result.run_id} result={result} api={api} authHeaders={authHeaders} selected={profile} onSelect={setProfile} />
+      <PlayerProfiles key={result.run_id} result={result} api={api} authHeaders={authHeaders} selected={profile} onSelect={setProfile} reviewRevision={saved?.revision} />
 
       <TrackExplorer result={result} onProfile={id => { setProfile(id); document.getElementById("player-profile")?.scrollIntoView({ block: "start" }); }} />
 

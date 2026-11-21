@@ -259,7 +259,20 @@ def create_gateway(volume, analyze, access_key, root=Path("/jobs"), call_lookup=
         from workers.video.player_labels import load_labels
         with review_lock:
             path,manifest=review_location(run_id)
-            try:return load_labels(path.with_name('player-labels.json'),manifest)
+            try:
+                from workers.video.event_review import load_review
+                from workers.video.video_roster import refresh_labels
+                return refresh_labels(load_labels(path.with_name('player-labels.json'),manifest),load_review(path,manifest)['lineups'])
+            except ValueError as exc:raise HTTPException(422,str(exc)) from exc
+
+    @app.get('/runs/{run_id}/roster',dependencies=[Depends(authorized)])
+    def get_video_roster(run_id:str):
+        from workers.video.event_review import load_review
+        from workers.video.player_labels import load_labels
+        from workers.video.video_roster import video_roster
+        with review_lock:
+            path,manifest=review_location(run_id)
+            try:return video_roster(load_review(path,manifest),load_labels(path.with_name('player-labels.json'),manifest))
             except ValueError as exc:raise HTTPException(422,str(exc)) from exc
 
     @app.get('/roster',dependencies=[Depends(authorized)])
@@ -280,7 +293,9 @@ def create_gateway(volume, analyze, access_key, root=Path("/jobs"), call_lookup=
         from workers.video.event_review import ReviewConflict
         with review_lock:
             path,manifest=review_location(run_id)
-            try:state=save_labels(path.with_name('player-labels.json'),manifest,payload,path.with_name('tracking.json'))
+            try:
+                from workers.video.event_review import load_review
+                state=save_labels(path.with_name('player-labels.json'),manifest,payload,path.with_name('tracking.json'),load_review(path,manifest)['lineups'])
             except ReviewConflict as exc:raise HTTPException(409,str(exc)) from exc
             except ValueError as exc:raise HTTPException(422,str(exc)) from exc
             volume.commit()
