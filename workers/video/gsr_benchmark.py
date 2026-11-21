@@ -279,6 +279,40 @@ def score(rows, labels, pitch, suggestions=None, numbers=None):
                            verdict="unknown" if known is None else "right" if known == proposal["proposed_number"] else "wrong"))
     numbered = {i for i, t in owner.items() if jersey[t]}
 
+    # The same reads checked against a team sheet. The labelled numbers seen in the clip stand in for a line-up,
+    # which makes the sheet shorter than a real one, so this flatters the result. Scored with and without the team known.
+    from workers.video import shirt_numbers as sn
+    label_side, label_role = defaultdict(Counter), {}
+    for people in labels["frames"].values():
+        for p in people:
+            label_role[p["track"]] = p["role"]
+            if p["team"]:
+                label_side[p["track"]][p["team"]] += 1
+    sheet, keepers = defaultdict(dict), defaultdict(set)
+    for track, counts in jersey.items():
+        if counts and label_side[track]:  # looking a track up above leaves an empty entry for one with no number
+            side, number = label_side[track].most_common(1)[0][0], counts.most_common(1)[0][0]
+            sheet[side][number] = dict(lineup_id=str(track), name=f"labelled player {track}", number=number, position=None)
+            if label_role.get(track) == "goalkeeper":
+                keepers[side].add(number)
+    keeper_identities = {identity(row) for row in rows if row.get("object_type") == "goalkeeper"}
+    def with_sheet(team_of):
+        tally = {digits: dict(right=0, wrong=0, unknown=0) for digits in ("two_digit", "one_digit")}
+        other = Counter()
+        for ident, result in sn.match_lineup((numbers or {}).get("proposals", []), dict(sheet), team_of, dict(keepers), keeper_identities).items():
+            if result["status"] != "match":
+                other[result["status"]] += 1
+                continue
+            track = owner.get(ident)
+            known = jersey[track].most_common(1)[0][0] if track is not None and jersey[track] else None
+            tally["one_digit" if result["one_digit"] else "two_digit"]["unknown" if known is None else "right" if known == result["number"] else "wrong"] += 1
+        return dict(tally, not_matched=dict(other))
+    sheet_scores = dict(
+        sheet_numbers={side: len(found) for side, found in sorted(sheet.items())},
+        sheet_source="labelled numbers visible in this clip; shorter than a real line-up, so the result is optimistic",
+        team_known=with_sheet({i: sides.most_common(1)[0][0] for i, sides in side_of.items() if sides}),
+        team_unknown=with_sheet({})) if sheet else None
+
     return dict(
         schema_version=VERSION, clip=labels["name"], action=labels["action"], visibility=labels["visibility"], frames=labels["frame_count"],
         detection=dict(labelled_boxes=len(labelled), our_boxes=len(our_people), matched=len(pairs),
@@ -299,4 +333,4 @@ def score(rows, labels, pitch, suggestions=None, numbers=None):
         kits=dict(identities=len(both), agreeing=best, share=round(best / len(both), 3) if both else None),
         shirt_numbers=dict(identities_with_labelled_number=len(numbered), proposals=len(shirts),
                            right=sum(s["verdict"] == "right" for s in shirts), wrong=sum(s["verdict"] == "wrong" for s in shirts),
-                           unknown=sum(s["verdict"] == "unknown" for s in shirts), items=shirts))
+                           unknown=sum(s["verdict"] == "unknown" for s in shirts), items=shirts, with_team_sheet=sheet_scores))

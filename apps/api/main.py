@@ -320,7 +320,15 @@ def get_roster():
 def get_merge_suggestions(run_id:str):
     from workers.video.merge_suggestions import suggest_for_run
     path,manifest=_review_location(run_id)
-    return suggest_for_run(path.parent,manifest)
+    out=suggest_for_run(path.parent,manifest)
+    if out.get('shirt_numbers'):
+        # Reads are checked against the line-up saved under Review each time, so a corrected line-up shows at once.
+        from workers.video.event_review import load_review
+        from workers.video.player_labels import load_labels
+        from workers.video.video_roster import lineup_number_matches
+        with REVIEW_LOCK:
+            out['shirt_numbers']=lineup_number_matches(out['shirt_numbers'],load_review(path,manifest),load_labels(path.with_name('player-labels.json'),manifest),manifest)
+    return out
 
 
 @app.post('/runs/{run_id}/players')

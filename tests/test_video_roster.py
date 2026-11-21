@@ -119,3 +119,25 @@ def test_gateway_serves_the_roster_and_links_through_the_saved_lineup(tmp_path):
     roster = client.get(base + "/roster", headers=headers).json()
     assert next(player for player in roster["players"] if player["name"] == "Bo Lee")["tracks"] == ["L1"]
     assert client.get(base + "/players", headers=headers).json()["players"][0]["team"] == "home"
+
+
+def test_shirt_number_reads_are_matched_to_the_lineup_for_identities_nobody_has_named(tmp_path):
+    from workers.video.video_roster import kit_teams, lineup_number_matches
+    m, _, _, review, labels = saved(tmp_path)
+    # L1 and L2 are named Ada Obi (home, kit-A); L3 is Cy Mo (away, kit-B); L4 has a typed name. Add two unnamed identities.
+    m["detection_summary"]["linked_tracks"] += [dict(linked_track_id="L5", track_ids=["S0:5"], object_type="player", team="kit-A", observations=10, first_seen_ms=0, last_seen_ms=900),
+                                                dict(linked_track_id="L6", track_ids=["S0:6"], object_type="player", team="kit-A", observations=10, first_seen_ms=0, last_seen_ms=900)]
+    assert kit_teams(labels, review["lineups"]) == {"kit-A": "home", "kit-B": "away"}
+    def entry(track, number, count):
+        return dict(track_id=track, proposed_number=number if len(number) == 2 else None, confident_reads=count, crops_read=30, reads=[dict(number=number, count=count)])
+    numbers = dict(reader="test", proposals=[], reads=[entry("L1", "8", 12), entry("L5", "9", 9), entry("L6", "9", 10), entry("L9", "9", 9)])
+    out = lineup_number_matches(numbers, review, labels, m)["lineup"]
+    by_track = {match["track_id"]: match for match in out["matches"]}
+    # L1 already has a name and L9 is not a tracked player of this run: neither is matched.
+    assert set(by_track) == {"L5", "L6"} and out["status"] == "checked" and out["counts"] == dict(match=2)
+    assert by_track["L5"]["candidates"] == [dict(team="home", lineup_id="h9", name="Bo Lee", number="9", position=None)]
+    assert by_track["L5"]["team_basis"] == "named_players_in_this_kit_group" and by_track["L5"]["kit"] == "kit-A"
+    # Two identities reading the same listed player point at each other: probably one player split by the tracker.
+    assert by_track["L5"]["same_player_tracks"] == ["L6"] and by_track["L6"]["same_player_tracks"] == ["L5"]
+    empty = save_review(tmp_path / "bare.json", m, dict(review_body(), lineups=dict(home=[], away=[])))
+    assert lineup_number_matches(numbers, empty, labels, m)["lineup"]["status"] == "no_lineup_numbers"

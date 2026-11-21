@@ -88,3 +88,19 @@ def test_shirt_number_proposals_are_judged_against_the_labelled_number():
     shirts = report["shirt_numbers"]
     assert (shirts["proposals"], shirts["right"], shirts["wrong"]) == (2, 1, 1)
     assert {s["track_id"]: s["digits"] for s in shirts["items"]} == {"L1": 2, "L2": 1}
+
+
+def test_reads_are_also_scored_against_a_team_sheet_made_from_the_labelled_numbers():
+    labels = _labels({1: (30., 20., 3., "left", "10"), 2: (60., 40., 6., "right", "7"), 3: (50., 30., 5., "right", "23")})
+    numbers = dict(proposals=[
+        dict(track_id="L1", proposed_number=None, confident_reads=11, reads=[dict(number="1", count=6), dict(number="10", count=5)]),   # half-reads of 10
+        dict(track_id="L2", proposed_number=None, confident_reads=9, reads=[dict(number="7", count=9)]),                                # a one-digit number
+        dict(track_id="L3", proposed_number="10", confident_reads=9, reads=[dict(number="10", count=9)])])                              # the other team's number
+    report = gb.score(_rows(labels, lambda track, frame: f"L{track}"), labels, {f: RECORD for f in range(75)}, None, numbers)
+    sheet = report["shirt_numbers"]["with_team_sheet"]
+    assert sheet["sheet_numbers"] == dict(left=1, right=2) and "optimistic" in sheet["sheet_source"]
+    assert sheet["team_known"]["two_digit"] == dict(right=1, wrong=0, unknown=0) and sheet["team_known"]["one_digit"] == dict(right=1, wrong=0, unknown=0)
+    assert sheet["team_known"]["not_matched"] == dict(not_on_sheet=1)
+    # With the team unknown, the right-side player's "10" matches the only player who wears it, on the other team: a wrong match.
+    assert sheet["team_unknown"]["two_digit"] == dict(right=1, wrong=1, unknown=0)
+    assert gb.score(_rows(labels, lambda track, frame: f"L{track}"), labels, {f: RECORD for f in range(75)})["shirt_numbers"]["with_team_sheet"]["team_known"]["two_digit"]["right"] == 0

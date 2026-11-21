@@ -21,7 +21,11 @@ type Identity = { track_id: string; object_type: string; team: string | null; fi
 type Suggestion = { from_track: string; to_track: string; gap_seconds: number; from_last_seen_seconds: number; to_first_seen_seconds: number; same_kit: boolean | null; basis: "pitch" | "image"; distance_m: number | null; distance_heights: number | null; rivals: number; fit?: number; close_fit?: boolean };
 /** A shirt number an experimental text reader saw repeatedly on one identity. A question for a person, not a recognition. */
 type NumberProposal = { track_id: string; proposed_number: string; agreement: number; confident_reads: number; crops_read: number };
-type Suggestions = { suggestions: Suggestion[]; suggestions_total: number; appearances?: Record<string, [number, number][]>; reason?: string; shirt_numbers?: { reader: string | null; proposals: NumberProposal[] } };
+/** What an identity's shirt-number reads say once only numbers on the saved line-up can be right. Still a question for a person. */
+type LineupMatch = { track_id: string; status: "match" | "ambiguous_team" | "too_few_reads" | "not_on_sheet" | "keeper_number_on_outfield_player";
+  number: string; reads: number; confident_reads: number; one_digit?: boolean; team: "home" | "away" | null; team_basis?: string | null;
+  candidates: { team: "home" | "away"; lineup_id: string; name: string; number: string; position: string | null }[]; same_player_tracks?: string[]; kit?: string | null };
+type Suggestions = { suggestions: Suggestion[]; suggestions_total: number; appearances?: Record<string, [number, number][]>; reason?: string; shirt_numbers?: { reader: string | null; proposals: NumberProposal[]; lineup?: { status: string; matches: LineupMatch[] } } };
 type RosterEntry = { name: string; number: string | null; clips: number };
 
 const BANDS: [string, string][] = [["walking", "Standing or walking (under 2 m/s)"], ["jogging", "Jogging (2 to 4 m/s)"], ["running", "Running (4 to 5.5 m/s)"], ["fast_running", "Fast running (5.5 m/s and over)"]];
@@ -191,6 +195,15 @@ export function PlayerProfiles({ result, api, authHeaders, selected, onSelect, r
   </>;
 
   const readNumbers = (suggested?.shirt_numbers?.proposals ?? []).filter(row => trackIds.includes(row.track_id));
+  const lineupMatches = (suggested?.shirt_numbers?.lineup?.matches ?? []).filter(row => trackIds.includes(row.track_id) && row.status !== "too_few_reads");
+  // Puts an identity under a line-up player. It only edits the names on screen: the reviewer still confirms and saves.
+  function chooseLineup(trackId: string, who: LineupMatch["candidates"][number]) {
+    const holder = players.find(row => row.lineupId === who.lineup_id);
+    if (holder) { if (!holder.tracks.includes(trackId)) edit(holder.key, { tracks: [...holder.tracks, trackId] }); return; }
+    const mine = owner(trackId);
+    if (mine) edit(mine.key, { lineupId: who.lineup_id, name: who.name, number: who.number });
+    else change([...players, { key: `new-${nextKey++}`, name: who.name, number: who.number, tracks: [trackId], lineupId: who.lineup_id }]);
+  }
 
   function join(row: Suggestion) {
     const mine = trackIds.includes(row.from_track) ? row.from_track : row.to_track, theirs = mine === row.from_track ? row.to_track : row.from_track;
@@ -275,6 +288,36 @@ export function PlayerProfiles({ result, api, authHeaders, selected, onSelect, r
               ))}
             </ul>
             {!player && <p>“Use” fills in the number below; the player still needs a name before anything is saved.</p>}
+          </div>
+        )}
+
+        {lineupMatches.length > 0 && videoRoster && (
+          <div className="note note--boxed">
+            <p>The same reads, checked against the line-up saved under Review. A match says only that the digits are a number on the team sheet. This check has not been scored against labelled footage, so watch the player before using it.</p>
+            <ul className="itemlist">
+              {lineupMatches.map(row => {
+                const who = row.candidates[0], teams = videoRoster.teams;
+                return (
+                  <li key={row.track_id}>
+                    <span>
+                      <span className="mono">{row.track_id}</span>: read <strong>{row.number}</strong> in {row.reads} of {row.confident_reads} confident reads.{" "}
+                      {row.status === "match" && <>On the line-up, {row.number} is <strong>{who.name}</strong> ({teams[who.team]}).
+                        {row.one_digit && " One-digit reads are often wrong, so this is a weak match."}
+                        {row.team_basis === "number_worn_on_one_team_only" && " Only one team lists this number; which team this identity is on is not otherwise known."}
+                        {row.same_player_tracks?.length ? ` The same player was also read on ${row.same_player_tracks.join(", ")}: possibly one player split by the tracker.` : ""}</>}
+                      {row.status === "ambiguous_team" && `Both teams list ${row.number}: ${row.candidates.map(entry => `${entry.name} (${teams[entry.team]})`).join(" and ")}. ${row.kit ? "Name one player from this identity’s kit group first, and the team will be known." : "This identity has no kit group, so its team cannot be worked out from the others."}`}
+                      {row.status === "not_on_sheet" && `Nobody on the saved line-up wears ${row.number}${row.team ? ` for ${teams[row.team]}` : ""}. It may be a misread, or the line-up may be incomplete.`}
+                      {row.status === "keeper_number_on_outfield_player" && `The line-up gives ${row.number} to a goalkeeper, but this identity is not classed as one. It is probably a misread.`}
+                    </span>
+                    <span className="row">
+                      <WatchButton at={(byId.get(row.track_id)?.first_seen_ms ?? 0) / 1000} label="Watch" describe={`Watch ${row.track_id} to check the number`} />
+                      {row.status === "match" && <button type="button" className="btn btn--secondary btn--sm" disabled={pending || !saved} onClick={() => chooseLineup(row.track_id, who)}>This is {who.name}</button>}
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+            <p>“This is…” puts the identity under that player in the names below. Nothing is saved until you confirm and save.</p>
           </div>
         )}
 

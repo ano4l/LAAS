@@ -89,6 +89,71 @@ def vote(reads, crops_tried):
     return proposals
 
 
+LINEUP_VERSION = "shirt-number-lineup-1"
+# A one-digit read is weak on its own (stripes and arms read as "1"), so on a team sheet it needs more reads and more agreement.
+LINEUP_ONE_DIGIT_MIN_READS = 8
+LINEUP_ONE_DIGIT_MIN_SHARE = .75
+LINEUP_LIMITATIONS = [
+    "A match says only that the reader's digits are a number on the saved line-up. It is a question for a person watching the footage, not an identification.",
+    "The line-up narrows the choice; it does not make a misread right. A sponsor's digits or a player standing behind can still match someone on the sheet.",
+    "Matching against a line-up has not been scored against labelled footage. One-digit matches in particular are unmeasured.",
+    "Which team an identity is on comes from its kit group and from players a person has already named. Where that is not known, a number worn on both teams cannot be resolved.",
+]
+
+
+def match_lineup(proposals, sheet, team_of=None, keepers=None, keeper_tracks=None):
+    """What each identity's reads say once only numbers on the team sheet can be right.
+
+    `proposals` are the entries `vote` returns (their `reads` hold the most frequent confident reads).
+    `sheet` is {team: {number: player}}; `team_of` is {identity: team} where a person's naming has
+    established it; `keepers` is {team: set of numbers worn by goalkeepers} and `keeper_tracks` the
+    identities the detector calls goalkeepers. Returns {identity: result}. Nothing is decided here.
+    """
+    team_of, keepers, keeper_tracks = team_of or {}, keepers or {}, set(keeper_tracks or ())
+    results = {}
+    for entry in proposals:
+        track, reads = entry["track_id"], [(read["number"], read["count"]) for read in entry.get("reads", [])]
+        confident = entry.get("confident_reads") or 0
+        if not reads:
+            continue
+        teams = [team_of[track]] if team_of.get(track) in sheet else list(sheet)
+        allowed = {number for team in teams for number in sheet[team]}
+        on_sheet = [(number, count) for number, count in reads if number in allowed]
+        top_number = reads[0][0]
+        if not on_sheet:
+            if entry.get("proposed_number"):
+                results[track] = dict(status="not_on_sheet", number=entry["proposed_number"], reads=reads[0][1], confident_reads=confident,
+                                      team=team_of.get(track), candidates=[])
+            continue
+        number, count = max(on_sheet, key=lambda item: (item[1], len(item[0])))
+        # Half of a two-digit number: "1" does not beat a "17" that is also on the sheet and read often enough.
+        if len(number) == 1:
+            longer = [(n, c) for n, c in on_sheet if len(n) == 2 and number in n and c >= MIN_READS and c >= count / 2]
+            if longer:
+                number, count = max(longer, key=lambda item: item[1])
+        # Reads that are one digit of the chosen number are the same shirt seen partly; they do not count against it.
+        partial = sum(c for n, c in reads if n != number and len(n) == 1 and len(number) == 2 and n in number)
+        against = max(0, confident - count - partial)
+        share = count / (count + against) if count + against else 0.
+        one_digit = len(number) == 1
+        enough = (count >= LINEUP_ONE_DIGIT_MIN_READS and share >= LINEUP_ONE_DIGIT_MIN_SHARE) if one_digit else (count >= MIN_READS and share >= MIN_SHARE)
+        candidates = [dict(team=team, **sheet[team][number]) for team in teams if number in sheet[team]]
+        # The detector's goalkeeper class is the only cue for who is in goal: an outfield identity does not match a keeper's number.
+        if candidates and track not in keeper_tracks:
+            outfield = [c for c in candidates if number not in keepers.get(c["team"], ())]
+            if not outfield:
+                results[track] = dict(status="keeper_number_on_outfield_player", number=number, reads=count, confident_reads=confident,
+                                      team=team_of.get(track), candidates=[])
+                continue
+            candidates = outfield
+        status = "too_few_reads" if not enough else "match" if len(candidates) == 1 else "ambiguous_team"
+        results[track] = dict(status=status, number=number, reads=count, against=against, agreement=round(share, 2), confident_reads=confident,
+                              one_digit=one_digit, team=candidates[0]["team"] if len(candidates) == 1 else team_of.get(track),
+                              team_basis="named_players_in_this_kit_group" if team_of.get(track) in sheet else "number_worn_on_one_team_only" if len(candidates) == 1 else None,
+                              candidates=candidates, unconstrained_top_read=top_number if top_number != number else None)
+    return results
+
+
 def read_run(video, rows, reader, crop_sink=None):
     """Read planned crops from `video` with `reader` and vote. `crop_sink(identity, frame, crop, text, confidence)` is optional."""
     import cv2

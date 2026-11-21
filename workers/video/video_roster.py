@@ -38,6 +38,53 @@ def refresh_labels(labels, lineups):
     return dict(labels, players=players)
 
 
+def kit_teams(labels, lineups):
+    """{kit group: team} where the players a person has tied to both agree. A kit claimed by both teams, or two kits by one, is left out."""
+    votes = defaultdict(Counter)
+    for player in refresh_labels(labels, lineups)["players"]:
+        if player.get("team") and not player["lineup_missing"]:
+            for kit in player.get("kits", []):
+                votes[kit][player["team"]] += 1
+    chosen = {kit: sides.most_common(1)[0][0] for kit, sides in votes.items() if len(sides) == 1}
+    taken = Counter(chosen.values())
+    return {kit: team for kit, team in chosen.items() if taken[team] == 1}
+
+
+def lineup_number_matches(shirt_numbers, review, labels, manifest):
+    """Shirt-number reads checked against the saved line-up, for identities a person has not yet named.
+
+    Adds `lineup` to `shirt_numbers`: per identity, whether its reads are a number on the team sheet and whose.
+    """
+    from workers.video import shirt_numbers as sn
+    from workers.video.player_labels import known_tracks
+    lineups = review.get("lineups") or {}
+    sheet = {side: {entry["number"]: dict(lineup_id=entry["id"], name=entry["name"], number=entry["number"], position=entry["position"])
+                    for entry in lineups.get(side, []) if entry["number"]} for side in SIDES}
+    if not any(sheet.values()):
+        return dict(shirt_numbers, lineup=dict(schema_version=sn.LINEUP_VERSION, status="no_lineup_numbers", matches=[],
+                                                reason="No line-up with shirt numbers is saved for this video."))
+    kits, mapping = known_tracks(manifest), kit_teams(labels, lineups)
+    named = {track for player in labels.get("players", []) for track in player["tracks"]}
+    team_of = {track: mapping[kit] for track, kit in kits.items() if kit in mapping}
+    summary = manifest.get("detection_summary") or {}
+    keeper_tracks = {t.get("linked_track_id") or t.get("track_id") for t in summary.get("linked_tracks") or summary.get("tracks", []) if t.get("object_type") == "goalkeeper"}
+    keepers = {side: {entry["number"] for entry in lineups.get(side, []) if entry["number"] and (entry["position"] or "").strip().casefold() in {"gk", "goalkeeper", "keeper", "goalie"}} for side in SIDES}
+    entries = [entry for entry in shirt_numbers.get("reads", []) if entry["track_id"] in kits and entry["track_id"] not in named]
+    results = sn.match_lineup(entries, sheet, team_of, keepers, keeper_tracks)
+    matches = [dict(track_id=track, kit=kits.get(track), **result) for track, result in sorted(results.items())]
+    # Several identities reading the same listed player are probably one player split by the tracker.
+    shared = defaultdict(list)
+    for match in matches:
+        if match["status"] == "match":
+            shared[match["candidates"][0]["lineup_id"]].append(match["track_id"])
+    for match in matches:
+        if match["status"] == "match":
+            match["same_player_tracks"] = [track for track in shared[match["candidates"][0]["lineup_id"]] if track != match["track_id"]]
+    return dict(shirt_numbers, lineup=dict(schema_version=sn.LINEUP_VERSION, status="checked", kit_teams=mapping, matches=matches,
+        counts=dict(Counter(match["status"] for match in matches)), limitations=sn.LINEUP_LIMITATIONS,
+        parameters=dict(min_reads=sn.MIN_READS, min_share=sn.MIN_SHARE, one_digit_min_reads=sn.LINEUP_ONE_DIGIT_MIN_READS, one_digit_min_share=sn.LINEUP_ONE_DIGIT_MIN_SHARE)))
+
+
 def video_roster(review, labels):
     """Every person a reviewer has named for this video, with what is known about each from all three places."""
     lineups, summary = review.get("lineups") or {}, review["summary"]
