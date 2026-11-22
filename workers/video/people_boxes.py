@@ -5,7 +5,10 @@ run in the pipeline and in offline scoring of saved detector output.
 """
 from __future__ import annotations
 
+from collections import Counter, defaultdict
+
 NMS_IOU = .40
+PERSON_KINDS = {"person", "player", "goalkeeper", "referee"}
 STACK_MAX_PIECE_ASPECT = 1.9  # a piece of a person is squat; a whole standing person is taller than this
 STACK_ASPECT = (1.6, 4.2)  # height over width a joined box must have to look like one person
 
@@ -103,3 +106,51 @@ def adopt_roles(people, hinted, default="player"):
                 inside.append((_iou(box, hint["bbox"]) + share, hint["confidence"], hint["object_type"]))
         out.append(dict(row, object_type=max(inside)[2] if inside else default))
     return out
+
+
+# One role per track. The football weights name a referee or goalkeeper in only some frames of a track, so the frames are
+# pooled: on labelled SoccerNet clips, true referee tracks were called a referee in 17% of their frames and players in 0%.
+ROLE_MIN_FRAMES = 5
+REFEREE_SHARE = .15
+REFEREE_SHARE_WITHOUT_KIT = .05  # enough when the track is also in neither kit group at least half the time
+KITLESS_SHARE = .5
+GOALKEEPER_SHARE = .1
+
+
+def settle_roles(rows, default="player"):
+    """{track_id: role} from each track's frame-by-frame role hints (`object_type`) and kit group (`team`).
+
+    A track is a referee when enough of its frames were called one, or fewer were but it also matches neither
+    kit group; a goalkeeper when enough frames were called one; otherwise `default`. On ten labelled clips this
+    marked 36% of referee observations (49% on three held-out clips) and 0.15% of outfield players' as referees.
+    """
+    hints, kitless, total = defaultdict(Counter), Counter(), Counter()
+    for row in rows:
+        track = row.get("track_id")
+        if track:
+            hints[track][row["object_type"]] += 1
+            kitless[track] += not row.get("team")
+            total[track] += 1
+    roles = {}
+    for track, counts in hints.items():
+        frames, referee, keeper = total[track], counts["referee"], counts["goalkeeper"]
+        if referee >= ROLE_MIN_FRAMES and (referee / frames >= REFEREE_SHARE
+                                           or (referee / frames >= REFEREE_SHARE_WITHOUT_KIT and kitless[track] / frames >= KITLESS_SHARE)):
+            roles[track] = "referee"
+        elif keeper >= ROLE_MIN_FRAMES and keeper / frames >= GOALKEEPER_SHARE:
+            roles[track] = "goalkeeper"
+        else:
+            roles[track] = default
+    return roles
+
+
+def apply_roles(rows, roles):
+    """Set each tracked person row to its track's settled role, keeping the frame's own hint as `role_hint`. Returns rows changed."""
+    changed = 0
+    for row in rows:
+        role = roles.get(row.get("track_id"))
+        if role and row.get("object_type") in PERSON_KINDS:
+            row["role_hint"] = row["object_type"]
+            changed += row["object_type"] != role
+            row["object_type"] = role
+    return changed

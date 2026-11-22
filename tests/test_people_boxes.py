@@ -82,3 +82,27 @@ def test_the_pipeline_takes_people_from_the_person_detector_and_roles_from_the_f
     # Without a person detector the football weights' own boxes are used, as before.
     plain = FootballDetector(tmp_path / "football.pt", device="cpu", image_size=640, ball_confidence=.1, object_confidence=.45, sample_fps=25)
     assert len([r for r in plain.detect(frame) if r["object_type"] != "ball"]) == 3
+
+
+def test_each_track_gets_one_role_from_all_its_frames():
+    from workers.video.people_boxes import apply_roles, settle_roles
+
+    def frames(track, kinds, kit="kit-A"):
+        return [dict(track_id=track, object_type=kind, team=kit, frame_idx=i) for i, kind in enumerate(kinds)]
+
+    rows = (frames("ref", ["player"] * 80 + ["referee"] * 20)              # called a referee in a fifth of its frames
+            + frames("odd", ["player"] * 90 + ["referee"] * 10, kit=None)  # fewer calls, but in neither kit group
+            + frames("out", ["player"] * 90 + ["referee"] * 10)            # the same few calls on a player in a kit group
+            + frames("few", ["player"] * 6 + ["referee"] * 4)              # a high share, but only four frames
+            + frames("gk", ["player"] * 85 + ["goalkeeper"] * 15)
+            + frames("all", ["player"] * 50)
+            + [dict(track_id=None, object_type="referee", team=None, frame_idx=0)])
+    roles = settle_roles(rows)
+    assert roles == dict(ref="referee", odd="referee", out="player", few="player", gk="goalkeeper", all="player")
+    changed = apply_roles(rows, roles)
+    assert changed == 80 + 90 + 10 + 4 + 85
+    assert {row["object_type"] for row in rows if row["track_id"] == "ref"} == {"referee"}
+    assert sum(row["role_hint"] == "referee" for row in rows if row["track_id"] == "ref") == 20   # the frame's own call is kept
+    assert rows[-1]["object_type"] == "referee" and "role_hint" not in rows[-1]                    # an untracked box is left alone
+    ball = [dict(track_id="ref", object_type="ball")]
+    assert apply_roles(ball, roles) == 0 and ball[0]["object_type"] == "ball"

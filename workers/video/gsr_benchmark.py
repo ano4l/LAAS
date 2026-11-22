@@ -279,8 +279,33 @@ def score(rows, labels, pitch, suggestions=None, numbers=None):
                            verdict="unknown" if known is None else "right" if known == proposal["proposed_number"] else "wrong"))
     numbered = {i for i, t in owner.items() if jersey[t]}
 
+    # Roles: which labelled kind each of our tracks sits on (referees included), beside what the pipeline's own cues said
+    # about it frame by frame. Used to choose and check the rule that settles one role per track.
+    kinds = PEOPLE | {"referee", "person"}
+    everyone = defaultdict(list)
+    followed, hinted, kit_votes = defaultdict(Counter), defaultdict(Counter), defaultdict(Counter)
+    for row in rows:
+        if row.get("object_type") in kinds and row.get("bbox") and row.get("track_id"):
+            everyone[row["frame_idx"]].append(row)
+            hinted[row["track_id"]][row["object_type"]] += 1
+            kit_votes[row["track_id"]][row.get("team") or "none"] += 1
+    for frame, people in labels["frames"].items():
+        candidates = everyone.get(frame, [])
+        scored = sorted(((_iou(r["bbox"], p["box"]), i, j) for i, r in enumerate(candidates) for j, p in enumerate(people)), reverse=True)
+        used_r, used_p = set(), set()
+        for overlap, i, j in scored:
+            if overlap < MATCH_IOU:
+                break
+            if i not in used_r and j not in used_p:
+                used_r.add(i)
+                used_p.add(j)
+                followed[candidates[i]["track_id"]][people[j]["role"]] += 1
+    role_items = [dict(track_id=track, observations=sum(hinted[track].values()), labelled=dict(followed[track]), hinted=dict(hinted[track]), kits=dict(kit_votes[track]))
+                  for track in sorted(hinted)]
+
     return dict(
         schema_version=VERSION, clip=labels["name"], action=labels["action"], visibility=labels["visibility"], frames=labels["frame_count"],
+        roles=dict(tracks=len(role_items), items=role_items),
         detection=dict(labelled_boxes=len(labelled), our_boxes=len(our_people), matched=len(pairs),
                        recall=round(len(pairs) / len(labelled), 3) if labelled else None,
                        precision=round(len(pairs) / len(our_people), 3) if our_people else None),

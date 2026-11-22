@@ -33,15 +33,20 @@ image = (
     .add_local_file(str(weights), "/models/football.pt", copy=True)
     .add_local_file(str(rescue_weights), "/models/ball-rescue.pt", copy=True)
     .env({"PYTHONPATH": "/app", "YOLO_MODEL_PATH": "/models/football.pt", "YOLO_DEVICE": "0",
-          "BALL_CONFIDENCE": "0.1", "OBJECT_CONFIDENCE": "0.45", "TRACKER_BACKEND":"botsort", "YOLO_BALL_RESCUE_PATH": "/models/ball-rescue.pt"})
+          "BALL_CONFIDENCE": "0.1", "OBJECT_CONFIDENCE": "0.45", "TRACKER_BACKEND":"botsort", "YOLO_BALL_RESCUE_PATH": "/models/ball-rescue.pt",
+          # People come from the general detector already shipped as the secondary ball model; the football weights keep the
+          # ball and the goalkeeper/referee labels. It found 90% of labelled players against 47% (docs/testing/DETECTOR_2026-11-22.md).
+          "YOLO_PERSON_MODEL_PATH": "/models/ball-rescue.pt"})
 )
 # Optional pitch landmark model. Without it the worker runs exactly as before and reports no pitch positions.
 if pitch_weights is not None and pitch_weights.is_file():
     image = image.add_local_file(str(pitch_weights), "/models/pitch.pt", copy=True).env({"YOLO_PITCH_MODEL_PATH": "/models/pitch.pt"})
 
 
+# The second detector makes a 30 s clip take about 130 to 160 s on the evaluation GPUs, so a 120 s clip needs more than the
+# former 600 s. A timeout would fail the run and still use up one of the counted attempts.
 @app.function(image=image, gpu="L4", cpu=2, memory=8192, volumes={"/jobs": volume},
-              min_containers=0, max_containers=1, scaledown_window=2, timeout=600,
+              min_containers=0, max_containers=1, scaledown_window=2, timeout=1200,
               startup_timeout=180, retries=0)
 def analyze(request_id: str, profile: str = "accurate", tile_size: int = 0):
     import hashlib
