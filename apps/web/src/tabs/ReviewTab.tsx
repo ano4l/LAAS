@@ -13,7 +13,7 @@ type Props = ClipTabProps & {
 export function ReviewTab({ result, saved, api, authHeaders, reviewUnsaved, onSaved, onUnsaved }: Props) {
   return (
     <div className="tabstack">
-      <ReviewPanel runId={result.run_id} duration={result.metadata.duration_seconds} api={api} authHeaders={authHeaders} onSaved={onSaved} onUnsaved={onUnsaved} />
+      <ReviewPanel runId={result.run_id} duration={result.metadata.duration_seconds} api={api} authHeaders={authHeaders} onSaved={onSaved} onUnsaved={onUnsaved} hasTracking={result.engine !== "review_only"} />
       {saved
         ? <ApprovedSummary saved={saved} unsaved={reviewUnsaved} />
         : <p className="notice" role="status"><span className="spinner" aria-hidden="true" /><span>Loading saved review records…</span></p>}

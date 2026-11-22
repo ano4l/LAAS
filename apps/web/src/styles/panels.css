@@ -584,3 +584,8 @@
 
 /* One line-up player per row; the row wraps on a narrow screen. */
 .lineup { align-items: end; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+
+/* Pass network drawn on the pitch: links by completed passes, players at their average located touch. */
+.passnet line { stroke: var(--chalk); opacity: .55; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+.passnet circle { fill: var(--flood); stroke: var(--ink); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.passnet text { fill: var(--chalk); font: 600 3px var(--font-mono); paint-order: stroke; stroke: #0b1612; stroke-width: .8px; stroke-linejoin: round; }

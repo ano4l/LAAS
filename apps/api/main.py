@@ -310,6 +310,21 @@ def get_video_roster(run_id:str):
         except ValueError as exc:raise HTTPException(422,str(exc)) from exc
 
 
+@app.get('/runs/{run_id}/players/near-ball')
+def get_players_near_ball(run_id:str,t:float):
+    # A shortlist for the person tagging an event at video time t. It reads stored detections and decides nothing.
+    from workers.video.event_review import load_review
+    from workers.video.player_labels import load_labels
+    from workers.video.tagging_hints import load_frames,near_ball
+    from workers.video.video_roster import refresh_labels
+    with REVIEW_LOCK:
+        path,manifest=_review_location(run_id)
+        try:
+            labels=refresh_labels(load_labels(path.with_name('player-labels.json'),manifest),load_review(path,manifest)['lineups'])
+            return near_ball(load_frames(path.with_name('tracking.json')),manifest['metadata'].get('fps') or 0,t,labels)
+        except ValueError as exc:raise HTTPException(422,str(exc)) from exc
+
+
 @app.get('/roster')
 def get_roster():
     from workers.video.player_labels import roster

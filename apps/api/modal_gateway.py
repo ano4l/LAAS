@@ -275,6 +275,19 @@ def create_gateway(volume, analyze, access_key, root=Path("/jobs"), call_lookup=
             try:return video_roster(load_review(path,manifest),load_labels(path.with_name('player-labels.json'),manifest))
             except ValueError as exc:raise HTTPException(422,str(exc)) from exc
 
+    @app.get('/runs/{run_id}/players/near-ball',dependencies=[Depends(authorized)])
+    def get_players_near_ball(run_id:str,t:float):
+        from workers.video.event_review import load_review
+        from workers.video.player_labels import load_labels
+        from workers.video.tagging_hints import load_frames,near_ball
+        from workers.video.video_roster import refresh_labels
+        with review_lock:
+            path,manifest=review_location(run_id)
+            try:
+                labels=refresh_labels(load_labels(path.with_name('player-labels.json'),manifest),load_review(path,manifest)['lineups'])
+                return near_ball(load_frames(path.with_name('tracking.json')),manifest['metadata'].get('fps') or 0,t,labels)
+            except ValueError as exc:raise HTTPException(422,str(exc)) from exc
+
     @app.get('/roster',dependencies=[Depends(authorized)])
     def get_roster():
         from workers.video.player_labels import roster

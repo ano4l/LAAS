@@ -1,4 +1,4 @@
-import type { KeyboardEvent, MouseEvent } from "react";
+import type { KeyboardEvent, MouseEvent, ReactNode } from "react";
 
 /** A point on the drawn pitch, in metres from its top-left corner. The pitch is assumed to be 105 x 68 m. */
 export type PitchPoint = { x: number; y: number };
@@ -11,8 +11,10 @@ const PAD = 2;
  * A top-down pitch for placing and showing events. With `onPick` it is clickable and reports the point in
  * metres; without it, it only shows `marks`. Positions are a person's judgement by eye, never a measurement.
  */
-export function PitchPicker({ marks, onPick, label, leftLabel, rightLabel }: {
+export function PitchPicker({ marks, onPick, label, leftLabel, rightLabel, overlay }: {
   marks: PitchMark[]; onPick?: (point: PitchPoint) => void; label: string; leftLabel?: string; rightLabel?: string;
+  /** Extra drawing in pitch metres, above the markings and below the marks. */
+  overlay?: ReactNode;
 }) {
   const midX = PITCH_LENGTH / 2, midY = PITCH_WIDTH / 2;
   const areaW = 40.32, areaL = 16.5, goalW = 18.32, goalL = 5.5, radius = 9.15, spot = 11, mouth = 7.32;
@@ -49,6 +51,7 @@ export function PitchPicker({ marks, onPick, label, leftLabel, rightLabel }: {
             );
           })}
         </g>
+        {overlay}
         {marks.map(mark => (
           <g key={mark.key} className={`pitchpick__mark ${mark.tone ? `pitchpick__mark--${mark.tone}` : ""}`}>
             {mark.title && <title>{mark.title}</title>}

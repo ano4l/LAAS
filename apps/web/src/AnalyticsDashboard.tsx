@@ -3,7 +3,7 @@ import { analyticsAreas, requiredFilters } from "./analytics-requirements";
 import { approvedMetric, type MetricState, type MetricValue, type Side } from "./approved-analytics";
 import { num, secs, sentence, words } from "./format";
 import { PitchPicker } from "./PitchPicker";
-import type { Review } from "./ReviewPanel";
+import type { PassNetwork, Review } from "./ReviewPanel";
 import { DataTable, Disclosure, EmptyState, Field } from "./ui";
 
 type Props = { saved: Review | null; unsaved?: boolean; onReview?: () => void };
@@ -13,6 +13,49 @@ const STATE: Record<MetricState, { label: string; chip: string; meaning: string 
   partial: { label: "Partly calculated", chip: "chip--draft", meaning: "Part of this is calculated from approved records. The note says what is missing." },
   unavailable: { label: "Not available yet", chip: "chip--unknown", meaning: "Nothing is shown because the data it needs does not exist yet." },
 };
+
+/** Who passed to whom. Drawn on the pitch only for players with a located pass; the table below always lists every pair. */
+function PassNetworkFigure({ team, network }: { team: string; network: PassNetwork }) {
+  const placed = network.nodes.filter(node => node.location);
+  const at = new Map(placed.map(node => [node.player, node.location!]));
+  const drawn = network.links.filter(link => link.completed > 0 && at.has(link.source) && at.has(link.target));
+  const most = Math.max(1, ...drawn.map(link => link.completed));
+  const busiest = Math.max(1, ...placed.map(node => node.passes_made + node.passes_received));
+  return (
+    <div className="stack stack--sm">
+      <h4>Pass network · {team}</h4>
+      <p className="note">
+        {network.completed} of {network.passes} approved {network.passes === 1 ? "pass" : "passes"} with both players named were completed.
+        {placed.length >= 2
+          ? ` ${placed.length} of ${network.nodes.length} players have a position: the average of where their passes started and where they received completed ones, with ${team} attacking to the right. Thicker lines mean more completed passes.`
+          : " Too few of these passes are placed on the pitch, with a direction of play, to draw the network; the pairs are listed below."}
+      </p>
+      {placed.length >= 2 && (
+        <PitchPicker marks={[]} leftLabel={`${team} goal`} rightLabel="Attacking this way →"
+          label={`Pass network for ${team}: ${placed.length} players placed and ${drawn.length} passing links drawn. Every pair is in the table below.`}
+          overlay={<g className="passnet">
+            {drawn.map(link => { const a = at.get(link.source)!, b = at.get(link.target)!; return <line key={`${link.source}>${link.target}`} x1={a.x} y1={a.y} x2={b.x} y2={b.y} strokeWidth={1 + 5 * link.completed / most} />; })}
+            {placed.map(node => (
+              <g key={node.player}>
+                <title>{node.player}: {node.passes_made} made, {node.passes_received} received</title>
+                <circle cx={node.location!.x} cy={node.location!.y} r={1.6 + 1.6 * (node.passes_made + node.passes_received) / busiest} />
+                <text x={node.location!.x} y={node.location!.y - 3.6} textAnchor="middle">{node.number ?? node.player.split(" ").map(part => part[0]).join("").slice(0, 3)}</text>
+              </g>
+            ))}
+          </g>} />
+      )}
+      <DataTable label={`Passing pairs for ${team}`}>
+        <thead><tr><th scope="col">From</th><th scope="col">To</th><th scope="col" className="num">Completed</th><th scope="col" className="num">Recorded</th></tr></thead>
+        <tbody>
+          {network.links.slice(0, 12).map(link => (
+            <tr key={`${link.source}>${link.target}`}><th scope="row">{link.source}</th><td>{link.target}</td><td className="num">{link.completed}</td><td className="num">{link.recorded}</td></tr>
+          ))}
+        </tbody>
+      </DataTable>
+      {network.links.length > 12 && <p className="note">Showing the 12 most frequent of {network.links.length} pairs.</p>}
+    </div>
+  );
+}
 
 /**
  * Every analytic the product was asked for. An entry shows a figure only when saved, approved
@@ -142,6 +185,11 @@ export function AnalyticsDashboard({ saved, unsaved, onReview }: Props) {
           </ul>
         </div>
       )}
+
+      {active.id === "match" && saved && (["home", "away"] as const).map(side => {
+        const network = s?.pass_networks?.[side];
+        return network ? <PassNetworkFigure key={side} team={saved.teams[side]} network={network} /> : null;
+      })}
 
       {s?.definitions && (
         <Disclosure summary="How these figures are counted">

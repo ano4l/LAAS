@@ -205,3 +205,26 @@ def test_private_review_api_persists_and_rejects_stale_revision_without_gpu(tmp_
     body['revision']=1;body['events']=[event(at=31)]
     assert client.post(route,headers=headers,json=body).status_code==422
     assert client.get(route,headers=headers).json()['revision']==1
+
+
+def test_pass_network_counts_named_passer_and_receiver_and_places_players_by_their_located_passes(tmp_path):
+    def passed(identity, passer, receiver, outcome='completed', start=None, end=None, team='home'):
+        row = dict(event(identity, outcome=outcome, team=team), player=passer, receiver=receiver)
+        if start: row.update(location=dict(x=start[0], y=start[1]), end_location=dict(x=end[0], y=end[1]))
+        return row
+    body = payload()
+    body['periods'] = {'1': dict(home_attacks='left')}
+    body['lineups'] = dict(home=[lineup('h8', 'Ada Obi', number='8')], away=[])
+    body['events'] = [passed('a', 'Ada Obi', 'Bo', start=(80, 20), end=(60, 30)), passed('b', 'ada obi', 'Bo', start=(70, 20), end=(50, 30)),
+                      passed('c', 'Ada Obi', 'Bo', 'incomplete'), passed('d', 'Bo', 'Ada Obi'), passed('e', 'Bo', 'Bo'),
+                      dict(event('f'), player='Ada Obi'), passed('g', 'Cy', 'Di', team='away')]
+    summary = save_review(tmp_path / 'review.json', MANIFEST, body)['summary']
+    home = summary['pass_networks']['home']
+    assert (home['passes'], home['completed']) == (4, 3)   # a pass to oneself and a pass with no receiver are left out
+    assert home['links'] == [dict(source='Ada Obi', target='Bo', recorded=3, completed=2), dict(source='Bo', target='Ada Obi', recorded=1, completed=1)]
+    nodes = {node['player']: node for node in home['nodes']}
+    # Home attack to the left, so points are turned: (80, 20) becomes (25, 48). Ada's two located starts average (30, 48).
+    assert nodes['Ada Obi'] == dict(player='Ada Obi', lineup_id='h8', number='8', passes_made=3, passes_received=1, located_touches=2, location=dict(x=30.0, y=48.0))
+    assert nodes['Bo']['location'] == dict(x=50.0, y=38.0) and nodes['Bo']['passes_received'] == 2 and nodes['Bo']['lineup_id'] is None
+    assert summary['pass_networks']['away']['nodes'][0]['location'] is None   # no located pass
+    assert empty_review(MANIFEST)['summary']['pass_networks'] == dict(home=None, away=None)

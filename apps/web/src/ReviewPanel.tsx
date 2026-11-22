@@ -17,6 +17,10 @@ type Approval = "draft" | "approved";
 export type Annotation = { id: string; timestamp_seconds: number; type: EventType; team: Team; player: string | null; outcome: string; review_status: Approval; notes: string;
   period?: number; location?: PitchPoint | null; end_location?: PitchPoint | null; body_part?: string | null; situation?: string | null; receiver?: string | null };
 type PeriodInfo = { home_attacks: "left" | "right" | null; reference_video_seconds: number | null; reference_clock_seconds: number | null };
+/** Who passed to whom, for approved passes where both players are named. A node's location is in the attacking direction, or null. */
+export type PassNetwork = { passes: number; completed: number;
+  nodes: { player: string; number: string | null; passes_made: number; passes_received: number; located_touches: number; location: PitchPoint | null }[];
+  links: { source: string; target: string; recorded: number; completed: number }[] };
 /** One player in a line-up, typed by the reviewer. Minutes are the minutes on the pitch during this video. */
 type LineupPlayer = { id: string; name: string; number: string | null; position: string | null; started: boolean; minutes: number | null };
 type Lineups = { home: LineupPlayer[]; away: LineupPlayer[] };
@@ -39,13 +43,19 @@ export type { TeamSummary };
 type ReviewSummary = { scope: string; summary_version?: number; approved_events: number; draft_events: number; reviewed_seconds: number; reviewed_video_pct: number | null;
   definitions?: Record<string, string>;
   teams: { home: TeamSummary | null; away: TeamSummary | null };
+  pass_networks?: Record<Team, PassNetwork | null>;
   lineups?: { home: number; away: number; unlisted_event_players: number }; per_90?: { supported: boolean; reason: string | null; min_minutes: number };
   players: { team: Team; player: string; event_count: number; counts: Record<string, number>; outcomes?: Record<string, Record<string, number>>;
     listed?: boolean; number?: string | null; position?: string | null; started?: boolean | null; minutes?: number | null; per_90?: Record<string, number> | null }[];
   possession: { home_seconds: number; away_seconds: number; unknown_seconds: number; home_share_pct: number | null; away_share_pct: number | null; known_coverage_pct: number | null } };
 export type Review = { schema_version: string; run_id: string; revision: number; teams: { home: string; away: string }; periods?: Record<string, PeriodInfo>; lineups?: Lineups; coverage: [number, number][];
   events: Annotation[]; possession_intervals: Possession[]; summary: ReviewSummary };
-type Props = { runId: string; duration: number; api: string; authHeaders: () => Record<string, string>; onSaved?: (saved: Review | null) => void; onUnsaved?: (unsaved: boolean) => void };
+type Props = { runId: string; duration: number; api: string; authHeaders: () => Record<string, string>; onSaved?: (saved: Review | null) => void; onUnsaved?: (unsaved: boolean) => void;
+  /** Detections are stored for this video, so the players nearest the ball at a moment can be looked up. */
+  hasTracking?: boolean };
+/** A shortlist of who was nearest the ball at a video time, read from stored detections. The reviewer still chooses. */
+type NearBall = { status: "ok" | "no_ball" | "no_player_near" | "no_tracking"; asked_seconds: number; frame_seconds?: number; reason?: string;
+  candidates: { track_id: string; distance_heights: number; named: boolean; name: string | null; number: string | null; team: Team | null }[] };
 type CoverageForm = { start: string; end: string };
 type PossessionForm = CoverageForm & { team: Possession["team"]; approved: boolean };
 type ReviewDraft = { review: Review; saved: Review; event: Annotation; editing: boolean; eventDirty: boolean; coverage: CoverageForm; interval: PossessionForm };
@@ -70,7 +80,7 @@ const warnForReviewDrafts = (event: BeforeUnloadEvent) => {
 window.addEventListener("beforeunload", warnForReviewDrafts);
 if (import.meta.hot) import.meta.hot.dispose(() => window.removeEventListener("beforeunload", warnForReviewDrafts));
 
-export function ReviewPanel({ runId, duration, api, authHeaders, onSaved, onUnsaved }: Props) {
+export function ReviewPanel({ runId, duration, api, authHeaders, onSaved, onUnsaved, hasTracking }: Props) {
   const playback = usePlayback();
   const [review, setReview] = useState<Review | null>(null);
   const [saved, setSaved] = useState<Review | null>(null);
@@ -83,6 +93,17 @@ export function ReviewPanel({ runId, duration, api, authHeaders, onSaved, onUnsa
   const [editing, setEditing] = useState(false);
   const [eventDirty, setEventDirty] = useState(false);
   const [placing, setPlacing] = useState<"start" | "end">("start");
+  const [hint, setHint] = useState<NearBall | null>(null);
+  const [hintPending, setHintPending] = useState(false);
+  async function askNearBall() {
+    setHintPending(true);
+    try {
+      const response = await fetch(`${api}/runs/${encodeURIComponent(runId)}/players/near-ball?t=${encodeURIComponent(String(event.timestamp_seconds))}`, { headers: authHeaders() });
+      if (!response.ok) throw new Error(`The players near the ball could not be looked up (${response.status}).`);
+      setHint(await response.json() as NearBall);
+    } catch (cause) { setHint(null); setError(String(cause instanceof Error ? cause.message : cause)); }
+    finally { setHintPending(false); }
+  }
   const [coverage, setCoverage] = useState({ start: "", end: "" });
   const [interval, setInterval] = useState({ start: "", end: "", team: "unknown" as Possession["team"], approved: false });
   const [eventSearch, setEventSearch] = useState("");
@@ -165,7 +186,7 @@ export function ReviewPanel({ runId, duration, api, authHeaders, onSaved, onUnsa
     const link = document.createElement("a"); link.href = url; link.download = `${runId}-saved-review-revision-${saved.revision}.json`; link.click();
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
-  function resetEvent() { setEvent(freshEvent()); setEditing(false); setEventDirty(false); setPlacing("start"); }
+  function resetEvent() { setEvent(freshEvent()); setEditing(false); setEventDirty(false); setPlacing("start"); setHint(null); }
   async function downloadApproved() {
     if (!saved || pending) return;
     try {
@@ -282,6 +303,27 @@ export function ReviewPanel({ runId, duration, api, authHeaders, onSaved, onUnsa
                   </Field>
                 </>}
               </div>
+              {hasTracking && (
+                <div className="stack stack--sm">
+                  <div><button type="button" className="btn btn--secondary btn--sm" disabled={hintPending} onClick={askNearBall}>{hintPending ? "Looking…" : "Who is nearest the ball at this time?"}</button></div>
+                  {hint && hint.status !== "ok" && <p className="note" role="status">At {num(hint.asked_seconds)} s: {hint.reason}</p>}
+                  {hint?.status === "ok" && <>
+                    <p className="note" role="status">Nearest the ball at {num(hint.frame_seconds ?? hint.asked_seconds)} s, from stored detections. The nearest box is not always the player on the ball, so check the footage.</p>
+                    <ul className="itemlist">
+                      {hint.candidates.map(candidate => (
+                        <li key={candidate.track_id}>
+                          <span>
+                            {candidate.named ? <><strong>{candidate.number ? `${candidate.number} · ` : ""}{candidate.name}</strong>{candidate.team ? ` (${review.teams[candidate.team]})` : ""}</> : <>Unnamed identity <span className="mono">{candidate.track_id}</span></>}
+                            {" · "}{num(candidate.distance_heights)} player heights from the ball
+                            {!candidate.named && ". Name it under Players to offer it here."}
+                          </span>
+                          {candidate.named && candidate.name && <button type="button" className="btn btn--secondary btn--sm" onClick={() => changeEvent({ player: candidate.name, ...(candidate.team ? { team: candidate.team } : {}) })}>Use {candidate.name}</button>}
+                        </li>
+                      ))}
+                    </ul>
+                  </>}
+                </div>
+              )}
               <div className="stack stack--sm">
                 <h4>Where on the pitch (optional)</h4>
                 <p className="note">

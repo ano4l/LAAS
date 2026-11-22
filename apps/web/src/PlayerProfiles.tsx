@@ -14,7 +14,8 @@ type NamedPlayer = { key: string; name: string; number: string; tracks: string[]
 /** One person in the video's shared roster: the line-up, the tracked identities named for them, and their approved events. */
 type RosterRow = { source: "lineup" | "tracked_only" | "event_only"; lineup_id: string | null; team: "home" | "away" | null; name: string; number: string | null;
   position: string | null; minutes: number | null; tracks: string[]; event_count: number; counts: Record<string, number>; per_90: Record<string, number> | null };
-type VideoRoster = { teams: { home: string; away: string }; players: RosterRow[] };
+type VideoRoster = { teams: { home: string; away: string }; players: RosterRow[]; counts?: { listed: number; listed_with_tracks: number; tracked_only: number; event_only: number } };
+const ROSTER_SOURCE: Record<RosterRow["source"], string> = { lineup: "In the line-up", tracked_only: "Named on tracked identities only", event_only: "Named on events only" };
 type Labels = { schema_version: string; run_id: string; source_sha256: string | null; revision: number; players: { id: string; name: string; number: string | null; tracks: string[]; lineup_id?: string | null; lineup_missing?: boolean }[]; overlap_checked: boolean | null };
 type Identity = { track_id: string; object_type: string; team: string | null; first_seen_ms: number; last_seen_ms: number; fragments: number };
 /** Two identities that could be one player, for a person to check. Never applied automatically. */
@@ -241,6 +242,26 @@ export function PlayerProfiles({ result, api, authHeaders, selected, onSelect, r
       aside={<span className="muted">{status}</span>}
     >
       <div className="stack" id="player-profile" aria-busy={pending}>
+        {videoRoster && videoRoster.players.length > 0 && (
+          <Disclosure variant="panel" summary="Roster for this video" meta={`${videoRoster.players.length} ${videoRoster.players.length === 1 ? "person" : "people"}${videoRoster.counts ? ` · ${videoRoster.counts.listed_with_tracks} of ${videoRoster.counts.listed} listed players tracked` : ""}`}>
+            <p>Everyone a person has named for this video, from the line-up, the tracked identities and the approved events. A link between them exists only where someone made it.</p>
+            <DataTable label="Roster for this video" stack>
+              <thead><tr><th scope="col">Player</th><th scope="col">Team</th><th scope="col">Named where</th><th scope="col" className="num">Tracked identities</th><th scope="col" className="num">Approved events</th><th scope="col">Profile</th></tr></thead>
+              <tbody>
+                {videoRoster.players.map((row, index) => (
+                  <tr key={`${row.source}-${row.lineup_id ?? row.name}-${index}`}>
+                    <th scope="row">{row.number ? `${row.number} · ` : ""}{row.name}{row.position ? <small>{row.position}</small> : null}</th>
+                    <td data-label="Team">{row.team ? videoRoster.teams[row.team] : "Not known"}</td>
+                    <td data-label="Named where">{ROSTER_SOURCE[row.source]}</td>
+                    <td data-label="Tracked identities" className="num">{row.tracks.length || DASH}</td>
+                    <td data-label="Approved events" className="num">{row.event_count || DASH}</td>
+                    <td data-label="Profile">{row.tracks.length && byId.has(row.tracks[0]) ? <button type="button" className="btn btn--secondary btn--sm" onClick={() => onSelect(row.tracks[0])}>Open profile</button> : <span className="muted">No tracked identity</span>}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </DataTable>
+          </Disclosure>
+        )}
         <div className="toolbar">
           <Field label="Show profile for"><select value={current ?? ""} onChange={event => onSelect(event.target.value)}>{options}</select></Field>
           <Field label="Compare with">

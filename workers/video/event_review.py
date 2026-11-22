@@ -1,5 +1,5 @@
 """Human annotation records and explicitly scoped football-event aggregation."""
-from collections import Counter
+from collections import Counter, defaultdict
 from datetime import datetime, timezone
 import json
 import math
@@ -165,6 +165,7 @@ def summarize(state,duration):
     players={}
     player_outcomes={}
     spelling={}
+    passing={}
     for side in ['home','away']:
         rows=[e for e in events if e['team']==side]
         if not rows:
@@ -202,6 +203,21 @@ def summarize(state,duration):
             passes_located=sum(1 for e in passes if e.get('location') and e.get('end_location')),
             passes_with_direction=len(turned),
             progressive_passes=sum(progressive(a,b) for a,b in turned) if turned else None)
+        # Who passed to whom, for passes where both players are named.
+        links,completed,made,received,spots=Counter(),Counter(),Counter(),Counter(),defaultdict(list)
+        for e in passes:
+            if not e.get('player') or not e.get('receiver'):continue
+            a,b=name_key(e['player']),name_key(e['receiver'])
+            spelling.setdefault((side,a),e['player']);spelling.setdefault((side,b),e['receiver'])
+            if a==b:continue
+            links[a,b]+=1;made[a]+=1
+            start=attacking(e.get('location'),side,e.get('period',1),periods)
+            if start:spots[a].append(start)
+            if e['outcome']=='completed':
+                completed[a,b]+=1;received[b]+=1
+                end=attacking(e.get('end_location'),side,e.get('period',1),periods)
+                if end:spots[b].append(end)
+        passing[side]=(links,completed,made,received,spots)
         for e in rows:
             if e.get('player'):
                 # One player typed with different spacing or capitals is still one player.
@@ -225,6 +241,21 @@ def summarize(state,duration):
             outcomes={kind:dict(outcomes) for kind,outcomes in sorted(player_outcomes.get((side,key),{}).items())},
             listed=bool(entry),lineup_id=entry['id'] if entry else None,number=entry['number'] if entry else None,
             position=entry['position'] if entry else None,started=entry['started'] if entry else None,minutes=minutes,per_90=rates)
+    networks={}
+    for side in ['home','away']:
+        links,completed,made,received,spots=passing.get(side,(Counter(),)*4+({},))
+        if not links:
+            networks[side]=None
+            continue
+        def node(key):
+            entry=listed.get((side,key));points=spots.get(key,[])
+            return dict(player=entry['name'] if entry else spelling[side,key],lineup_id=entry['id'] if entry else None,
+                number=entry['number'] if entry else None,passes_made=made[key],passes_received=received[key],located_touches=len(points),
+                location=dict(x=round(sum(p['x'] for p in points)/len(points),1),y=round(sum(p['y'] for p in points)/len(points),1)) if points else None)
+        keys=sorted({key for pair in links for key in pair})
+        names={key:node(key)['player'] for key in keys}
+        networks[side]=dict(passes=sum(links.values()),completed=sum(completed.values()),nodes=[node(key) for key in keys],
+            links=[dict(source=names[a],target=names[b],recorded=n,completed=completed[a,b]) for (a,b),n in sorted(links.items(),key=lambda item:(-item[1],item[0]))])
     # Events are matched to a line-up by the typed name. A listed player with no approved event still appears, with zero.
     rows=[player_row(side,key,counts) for (side,key),counts in sorted(players.items())]
     rows+=[player_row(side,key,Counter()) for (side,key) in sorted(listed) if (side,key) not in players]
@@ -236,9 +267,10 @@ def summarize(state,duration):
             shots='On target includes goals. Conversion is goals divided by shots with a known outcome.',
             turnovers='Possession lost is incomplete passes plus unsuccessful dribbles. Possession won is interceptions plus tackles won. Loose balls, clearances and fouls are not recorded, so neither is a full turnover count.',
             per_90='A rate per 90 minutes is a player\'s approved events divided by the minutes typed in the line-up, times 90. It is given only when at least 90% of the video is marked as reviewed, the video is long enough to contain those minutes, and the player has at least 10 minutes.',
+            pass_network='Passes where both the passer and the receiver are named. A player is placed at the average of where their passes started and where they received completed ones, turned so the team attacks to the right; a player with no located pass, or in a period with no recorded direction of play, has no position.',
             locations='A location is where the reviewer clicked on a drawn 105 x 68 m pitch. It is a judgement by eye, not a measurement.',
             progressive_passes='A pass is progressive when it ends closer to the opponent goal by at least 30 m with both ends in the own half, 15 m when it crosses halfway, or 10 m with both ends in the opponent half (the rule Wyscout publishes). It is counted only for passes with a start, an end and a recorded direction of play, whether or not the pass was completed.'),
-        players=rows,
+        players=rows,pass_networks=networks,
         lineups=dict(home=len(lineups['home']),away=len(lineups['away']),
             unlisted_event_players=sum(1 for row in rows if not row['listed'] and row['event_count'])),
         per_90=dict(supported=supported,reason=reason,min_minutes=PER_90_MIN_MINUTES),
