@@ -589,3 +589,79 @@
 .passnet line { stroke: var(--chalk); opacity: .55; stroke-linecap: round; vector-effect: non-scaling-stroke; }
 .passnet circle { fill: var(--flood); stroke: var(--ink); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
 .passnet text { fill: var(--chalk); font: 600 3px var(--font-mono); paint-order: stroke; stroke: #0b1612; stroke-width: .8px; stroke-linejoin: round; }
+
+/* ---------- Analytics: one entry per requested metric ---------- */
+
+.metrics {
+  container-type: inline-size;
+  display: grid;
+  margin: 0;
+  padding: 0 !important;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  list-style: none;
+}
+
+.metric {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px 24px;
+  padding: 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.metric:last-child { border-bottom: 0; }
+
+.metric__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+}
+
+.metric__head h5 { color: var(--chalk); font-size: 15px; }
+.metric__body { display: grid; gap: 12px; min-width: 0; }
+
+.metric__note {
+  max-width: 76ch;
+  color: var(--chalk-3);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.metric__estimate {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-md);
+}
+
+.metrics--missing .metric { gap: 4px 24px; padding: 10px 16px; }
+.metrics--missing .metric__head h5 { color: var(--chalk-2); font-size: 14px; }
+
+@container (min-width: 720px) {
+  .metric { grid-template-columns: 220px minmax(0, 1fr); }
+  .metric__head { flex-direction: column; align-items: flex-start; justify-content: flex-start; }
+}
+
+/* Figures inside an entry: a quiet label, then its values with the numbers picked out. */
+.fig { display: grid; gap: 10px; min-width: 0; }
+.fig__row { display: grid; gap: 2px; min-width: 0; }
+.fig__label { color: var(--chalk-2); font-size: 12.5px; font-weight: 600; }
+
+.fig__parts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 18px;
+  color: var(--chalk-2);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.fig__lead { color: var(--chalk-2); font-size: 14px; line-height: 1.5; }
+.fig__n { color: var(--chalk); font-weight: 650; font-variant-numeric: tabular-nums; }
+.fig__table tbody th { color: var(--chalk-2); font-weight: 500; }
+.fig__table .num { font-family: var(--font-text); }
+.fig__table thead .num { color: var(--chalk); }

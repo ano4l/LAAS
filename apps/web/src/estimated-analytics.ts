@@ -64,10 +64,10 @@ export function estimatedMetric(id: string, result: AnalysisResult, label: Label
       if (c.seen) {
         const s = c.seen, total = s.counts.completed + s.counts.not_completed;
         const lines = [
-          `About ${plural(total, "pass", "passes")} seen: ${n(s.counts.completed)} reached a team-mate, ${n(s.counts.not_completed)} did not (${n(100 * s.counts.completed / total)}% completed)`,
+          `About ${plural(total, "pass", "passes")} seen · ${n(s.counts.completed)} reached a team-mate · ${n(s.counts.not_completed)} did not · ${n(100 * s.counts.completed / total)}% completed`,
           ...s.by_team.map(team => `${name(team.team)}: about ${n(team.completed)} of ${n(team.attempted)} completed (${n(team.completion_pct)}%) · ${n(team.mean_length_m)} m long on average`),
         ];
-        if (s.counts.outcome_not_seen) lines.push(`${plural(s.counts.outcome_not_seen, "more ball")} struck long and not seen to reach anyone: not counted either way`);
+        if (s.counts.outcome_not_seen) lines.push(`${plural(s.counts.outcome_not_seen, "more ball")} struck long and not seen to reach anyone, so counted as neither`);
         return { lines, note: `${PASS_NOTE} Each one is listed with footage under Ball, where it can be turned into a review event with its outcome and places filled in.` };
       }
       if (!c.touches.size) return null;

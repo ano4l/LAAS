@@ -7,6 +7,7 @@ import type { AnalysisResult } from "./main";
 import { num, secs, sentence, words } from "./format";
 import { PitchPicker } from "./PitchPicker";
 import type { PassNetwork, Review } from "./ReviewPanel";
+import { Figures } from "./Figures";
 import { DataTable, Disclosure, EmptyState, Field } from "./ui";
 
 type Props = { result: AnalysisResult; saved: Review | null; unsaved?: boolean; onReview?: () => void };
@@ -91,6 +92,9 @@ export function AnalyticsDashboard({ result, saved, unsaved, onReview }: Props) 
   const totalShown = analyticsAreas.reduce((sum, area) => sum + shown(area.id), 0);
   const totalEstimated = [...values.values()].filter(value => value.state === "estimated").length;
   const matches = active.metrics.filter(metric => metric.label.toLowerCase().includes(query.trim().toLowerCase()));
+  // Entries with figures come first; the ones still waiting for data are listed compactly beneath them.
+  const withFigures = matches.filter(metric => values.get(metric.id)!.state !== "unavailable");
+  const missing = matches.filter(metric => values.get(metric.id)!.state === "unavailable");
   const s = saved?.summary;
   const approvedShots = saved?.events.filter(event => event.review_status === "approved" && event.type === "shot") ?? [];
   const placedShots = approvedShots.filter(event => event.location);
@@ -155,32 +159,46 @@ export function AnalyticsDashboard({ result, saved, unsaved, onReview }: Props) 
       </div>
 
       {matches.length > 0 ? (
-        <DataTable label={`${active.title}: requested metrics, their figures and what they need`} stack>
-          <thead><tr><th scope="col">Requested metric</th><th scope="col">Status</th><th scope="col">Figures</th><th scope="col">How to read it</th></tr></thead>
-          <tbody>
-            {matches.map(metric => {
-              const value = values.get(metric.id)!, state = STATE[value.state];
-              return (
-                <tr key={metric.id}>
-                  <th scope="row">{metric.label}</th>
-                  <td data-label="Status"><span className={`chip ${state.chip}`} title={state.meaning}>{(value.state === "unavailable" || value.state === "estimated") && <i className="chip__swatch" aria-hidden="true" />}{state.label}</span></td>
-                  <td data-label="Figures" className="cell--prose">
-                    {value.lines.length
-                      ? <div className="stack stack--sm">{value.lines.map(line => <span key={line}>{line}</span>)}</div>
-                      : <span className="mono faint" aria-label="No calculated value">—</span>}
-                    {value.estimate && (
-                      <div className="stack stack--sm muted">
-                        <span><strong>Model estimate from the video, not added in:</strong></span>
-                        {value.estimate.lines.map(line => <span key={line}>{line}</span>)}
-                      </div>
-                    )}
-                  </td>
-                  <td data-label="How to read it" className="cell--prose">{value.note ?? (value.state === "calculated" ? "Nothing more at clip level. A match total needs the whole match reviewed." : metric.needs)}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </DataTable>
+        <>
+          {withFigures.length > 0 && (
+            <ul className="metrics" aria-label={`${active.title}: metrics with figures for this clip`}>
+              {withFigures.map(metric => {
+                const value = values.get(metric.id)!, state = STATE[value.state];
+                return (
+                  <li key={metric.id} className={`metric metric--${value.state}`}>
+                    <div className="metric__head">
+                      <h5>{metric.label}</h5>
+                      <span className={`chip ${state.chip}`} title={state.meaning}>{value.state === "estimated" && <i className="chip__swatch" aria-hidden="true" />}{state.label}</span>
+                    </div>
+                    <div className="metric__body">
+                      {value.lines.length > 0 && <Figures lines={value.lines} label={`${metric.label}: figures`} />}
+                      {value.estimate && (
+                        <div className="metric__estimate">
+                          <p className="fig__label">Model estimate from the video · not added in</p>
+                          <Figures lines={value.estimate.lines} label={`${metric.label}: the model’s estimate from the video`} />
+                        </div>
+                      )}
+                      <p className="metric__note">{value.note ?? (value.state === "calculated" ? "Nothing more at clip level. A match total needs the whole match reviewed." : metric.needs)}</p>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+          {missing.length > 0 && (
+            <div className="stack stack--sm">
+              <h5>Not available yet · {missing.length}</h5>
+              <ul className="metrics metrics--missing" aria-label={`${active.title}: metrics with no figures yet, and what each needs`}>
+                {missing.map(metric => (
+                  <li key={metric.id} className="metric metric--unavailable">
+                    <div className="metric__head"><h5>{metric.label}</h5></div>
+                    <p className="metric__note">{values.get(metric.id)!.note ?? metric.needs}</p>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </>
       ) : (
         <EmptyState title={`No matching metrics in ${active.title}`} action={<button type="button" className="btn btn--secondary btn--sm" onClick={() => setQuery("")}>Clear search</button>}>
           Try another metric name or select a different module.
