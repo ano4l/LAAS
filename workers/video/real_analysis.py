@@ -14,7 +14,7 @@ from uuid import uuid4
 
 import cv2
 
-from workers.video.yolo_adapter import model_path, pitch_model_path, yolo_capabilities
+from workers.video.yolo_adapter import model_path, person_model_path, pitch_model_path, yolo_capabilities
 from workers.video.detector import FootballDetector
 from workers.video.accuracy import analysis_settings
 from workers.video import insights as video_insights, measurements as video_measurements
@@ -64,10 +64,12 @@ def run_real_analysis(input_video: Path, output_root: Path, progress=None) -> di
     object_confidence = float(os.getenv("OBJECT_CONFIDENCE", "0.45"))
     if not 0 < ball_confidence <= 1 or not 0 < object_confidence <= 1:
         raise ValueError("Detection confidence thresholds must be greater than 0 and at most 1.")
+    person_weights = person_model_path(ROOT)
     detector = FootballDetector(model_path(ROOT), device=device, image_size=image_size,
                                 ball_confidence=ball_confidence, object_confidence=object_confidence,
                                 sample_fps=metadata["fps"] / stride, ball_weights=ball_weights,
-                                tile_size=options["tile_size"],ball_rescue_weights=rescue_weights)
+                                tile_size=options["tile_size"],ball_rescue_weights=rescue_weights,
+                                person_weights=person_weights)
     pitch_weights = pitch_model_path(ROOT)
     pitch_model = None
     if pitch_weights:
@@ -177,6 +179,15 @@ def run_real_analysis(input_video: Path, output_root: Path, progress=None) -> di
             progress("Linking fragmented tracks", 0.96)
         # Image-based camera motion is used for the ball path. Track linking keeps its own
         # estimate from player movement, which measured better for joining player tracks.
+        # With a general person detector the football weights name a referee or goalkeeper in only some frames of a track,
+        # so each track is given one role from all its frames before tracks are linked into identities.
+        roles, role_changes = {}, 0
+        if getattr(detector, "person_model", None):
+            from workers.video.people_boxes import apply_roles, settle_roles
+            roles = settle_roles(link_rows, detector.default_role)
+            apply_roles(link_rows, roles)
+            apply_roles(preview, roles)
+            track_classes.update({track: role for track, role in roles.items() if track in track_classes})
         camera = CameraMotion.from_warps(warps, warp_scenes) if warps else CameraMotion.from_people(link_rows)
         (out_dir / "camera-motion.json").write_text(json.dumps(dict(source=camera.source, warps=warps, scenes=warp_scenes)), encoding="utf-8")
         linking = link_tracks(link_rows, appearance.descriptors(), metadata["fps"], embeddings=appearance.embeddings())
@@ -185,6 +196,12 @@ def run_real_analysis(input_video: Path, output_root: Path, progress=None) -> di
         write_links(out_dir, linking)
         # Analytics are computed after linking so they follow linked identities, not raw tracker IDs.
         linked_rows = json.loads((out_dir / "tracking.json").read_text(encoding="utf-8"))
+        if roles:
+            from workers.video.people_boxes import PERSON_KINDS
+            role_changes = apply_roles(linked_rows, roles)
+            ball_kinds = {kind: n for kind, n in counts.items() if kind not in PERSON_KINDS}
+            counts = Counter(row["object_type"] for row in linked_rows if row["object_type"] in PERSON_KINDS)
+            counts.update(ball_kinds)
         # Choose the ball path over the whole clip, then store the rows analytics will read.
         ball_path = select_ball_path(linked_rows, metadata, camera=camera)
         write_rows(out_dir / "tracking.json", linked_rows)
@@ -235,6 +252,13 @@ def run_real_analysis(input_video: Path, output_root: Path, progress=None) -> di
         summary["pitch_calibration"] = ({key: pitch_document[key] for key in ("schema_version", "method", "model", "model_sha256", "frame_stride", "assumed_pitch", "summary")}
                                         if pitch_document else dict(status="not_run", reason="No pitch landmark model is configured."))
         summary["linked_tracks"] = linking["identities"]
+        if person_weights:
+            with person_weights.open('rb') as stream:
+                summary['person_model_sha256']=hashlib.file_digest(stream,'sha256').hexdigest()
+            summary['person_model']=person_weights.name
+            summary['person_detection']='People come from a general person detector; the football weights supply the ball and the goalkeeper and referee labels. Each track has one role, settled from all its frames; role_hint keeps what each frame was called.'
+            summary['role_settling']=dict(tracks=len(roles),referee_tracks=sum(role=='referee' for role in roles.values()),
+                                          goalkeeper_tracks=sum(role=='goalkeeper' for role in roles.values()),rows_changed=role_changes)
         if rescue_weights:
             with rescue_weights.open('rb') as stream:
                 summary['secondary_ball_model_sha256']=hashlib.file_digest(stream,'sha256').hexdigest()

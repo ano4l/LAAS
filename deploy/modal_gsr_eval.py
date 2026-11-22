@@ -1,6 +1,11 @@
 """Operator-only evaluation against SoccerNet Game State Reconstruction (SN-GSR-2025). Never deployed.
 
     python -m modal run deploy/modal_gsr_eval.py --out-dir <folder> [--count 10] [--sequences SNGS-116,SNGS-117] [--rescore-only]
+                                                   [--label yolo11x --person yolo11x]
+
+`--person` chooses the detector for people: `off` (the football weights, as first evaluated), `yolov8m` or
+`yolo11x` (a general person detector; the football weights then supply only the ball and the roles).
+`--label` keeps a run's outputs and report apart on the volume, so an earlier run is not overwritten.
 
 Runs as its own short-lived app with its own volume (`laas-eval`); the analysis worker and the
 volume holding users' clips are not touched. For each chosen clip of the dataset's labelled
@@ -55,6 +60,8 @@ gpu_image = (
     .pip_install("ultralytics==8.4.178", "lap>=0.5.12", "imageio-ffmpeg>=0.6.0", "pytorch-lightning>=2.2", "timm>=0.9.16", "nltk", "pyyaml")
     .run_commands(f"git clone https://github.com/baudm/parseq /opt/parseq && cd /opt/parseq && git checkout {PARSEQ_COMMIT}",
                   "python -c \"import torch; torch.hub.load('/opt/parseq', 'parseq', pretrained=True, source='local')\"")
+    # A general person detector from Ultralytics' own release assets, fetched once while the image is built.
+    .run_commands("mkdir -p /models && cd /models && python -c \"from ultralytics import YOLO; YOLO('yolo11x.pt')\"")
     .add_local_dir(str(ROOT / "workers"), "/app/workers", copy=True, ignore=["**/__pycache__/**", "**/*.pyc"])
 )
 if modal.is_local():
@@ -157,13 +164,22 @@ def fetch(sequence: str):
     return dict(sequence=sequence, frames=count, span_mb=round((end - start) / 1e6, 1), video_mb=round((target / "source.mp4").stat().st_size / 1e6, 1))
 
 
-def _score(sequence):
+PERSON_MODELS = {"off": "off", "yolov8m": "/models/ball-rescue.pt", "yolo11x": "/models/yolo11x.pt"}
+
+
+def _named(name, label):
+    """`outputs`, `report.json` and `shirt-numbers.json` for the first run; the same with the label added for a later one."""
+    stem, dot, suffix = name.partition(".")
+    return f"{stem}-{label}{dot}{suffix}" if label else name
+
+
+def _score(sequence, label=""):
     import json
     from workers.video import gsr_benchmark as gb
     from workers.video import merge_suggestions as ms
 
     target = DATA / sequence
-    run_dir = next((target / "outputs").iterdir())
+    run_dir = next((target / _named("outputs", label)).iterdir())
     rows = json.loads((run_dir / "tracking.json").read_text(encoding="utf-8"))
     labels = gb.load_labels(json.loads((target / "Labels-GameState.json").read_text(encoding="utf-8")))
     pitch = None
@@ -171,19 +187,21 @@ def _score(sequence):
         pitch = {int(k): v for k, v in json.loads((run_dir / "pitch-calibration.json").read_text(encoding="utf-8")).get("frames", {}).items()}
     ms.MAX_SUGGESTIONS = 10 ** 6  # every suggestion is judged, not only the ones the profile would list
     suggestions = ms.suggest(rows, labels["fps"], pitch)
-    numbers_path = target / "shirt-numbers.json"
+    numbers_path = target / _named("shirt-numbers.json", label)
     numbers = json.loads(numbers_path.read_text(encoding="utf-8")) if numbers_path.is_file() else None
     manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8")) if (run_dir / "manifest.json").is_file() else {}
     report = gb.score(rows, labels, pitch, suggestions, numbers)
     report["run"] = dict(metadata={k: manifest.get("metadata", {}).get(k) for k in ("width", "height", "fps", "frame_count", "duration_seconds")},
                          calibration_summary=((manifest.get("detection_summary") or {}).get("pitch_calibration") or {}).get("summary"),
-                         linking=(manifest.get("detection_summary") or {}).get("track_linking"))
-    (target / "report.json").write_text(json.dumps(report), encoding="utf-8")
+                         linking=(manifest.get("detection_summary") or {}).get("track_linking"),
+                         person_model=(manifest.get("detection_summary") or {}).get("person_model"),
+                         processing_seconds=(manifest.get("detection_summary") or {}).get("processing_seconds"))
+    (target / _named("report.json", label)).write_text(json.dumps(report), encoding="utf-8")
     return report
 
 
 @app.function(image=gpu_image, gpu=["L4", "T4"], cpu=2, memory=12288, volumes={"/eval": volume}, max_containers=2, timeout=2400, retries=0)
-def analyse(sequence: str):
+def analyse(sequence: str, label: str = "", person: str = "off"):
     import json
     import shutil
     import torch
@@ -194,24 +212,26 @@ def analyse(sequence: str):
         raise RuntimeError("No GPU")
     volume.reload()
     target = DATA / sequence
-    shutil.rmtree(target / "outputs", ignore_errors=True)
-    result = run_real_analysis(target / "source.mp4", target / "outputs", lambda stage, fraction: None)
-    run_dir = target / "outputs" / result["run_id"]
+    os.environ["YOLO_PERSON_MODEL_PATH"] = PERSON_MODELS[person]
+    outputs = target / _named("outputs", label)
+    shutil.rmtree(outputs, ignore_errors=True)
+    result = run_real_analysis(target / "source.mp4", outputs, lambda stage, fraction: None)
+    run_dir = outputs / result["run_id"]
     (run_dir / "manifest.json").write_text(json.dumps(result), encoding="utf-8")
     sn.PROPOSE_ONE_DIGIT = True  # scored separately, so the product setting can be checked
     reader = sn.ParseqReader("/opt/parseq", device="cuda")
     numbers = sn.read_run(target / "source.mp4", json.loads((run_dir / "tracking.json").read_text(encoding="utf-8")), reader)
-    (target / "shirt-numbers.json").write_text(json.dumps(numbers), encoding="utf-8")
+    (target / _named("shirt-numbers.json", label)).write_text(json.dumps(numbers), encoding="utf-8")
     volume.commit()
-    report = _score(sequence)
+    report = _score(sequence, label)
     volume.commit()
     return report
 
 
 @app.function(image=cpu_image, cpu=2, memory=4096, volumes={"/eval": volume}, max_containers=4, timeout=900, retries=0)
-def rescore(sequence: str):
+def rescore(sequence: str, label: str = ""):
     volume.reload()
-    report = _score(sequence)
+    report = _score(sequence, label)
     volume.commit()
     return report
 
@@ -269,7 +289,7 @@ def line_study(sequence: str):
 
 
 @app.local_entrypoint()
-def main(out_dir: str, count: int = 10, sequences: str = "", rescore_only: bool = False, lines_only: bool = False):
+def main(out_dir: str, count: int = 10, sequences: str = "", rescore_only: bool = False, lines_only: bool = False, label: str = "", person: str = "off"):
     import io
     import json
     import zipfile
@@ -291,18 +311,23 @@ def main(out_dir: str, count: int = 10, sequences: str = "", rescore_only: bool 
                 (out / f"{sequence}-lines.json").write_text(json.dumps(result["rows"]), encoding="utf-8")
                 print(sequence, "frames", len(result["rows"]), flush=True)
         return
+    if person not in PERSON_MODELS:
+        raise SystemExit(f"--person must be one of {', '.join(PERSON_MODELS)}")
     if rescore_only:
-        reports = list(rescore.map(chosen, return_exceptions=True))
+        reports = list(rescore.map(chosen, kwargs=dict(label=label), return_exceptions=True))
     else:
         for stored in fetch.map(chosen, return_exceptions=True):
             print("fetched", stored, flush=True)
-        reports = list(analyse.map(chosen, return_exceptions=True))
+        reports = list(analyse.map(chosen, kwargs=dict(label=label, person=person), return_exceptions=True))
     for sequence, report in zip(chosen, reports):
         if isinstance(report, Exception):
             print(sequence, "failed", type(report).__name__, report, flush=True)
             continue
         (out / f"{sequence}.json").write_text(json.dumps(report, indent=1), encoding="utf-8")
-        print(sequence, json.dumps(dict(position=report["position_error"], calibration=report["calibration"]["share"],
+        print(sequence, json.dumps(dict(detection=(report["detection"]["recall"], report["detection"]["precision"]),
+                                        identities_per_player=report["identities"]["identities_per_followed_player"],
+                                        players_followed=(report["identities"]["labelled_players_followed"], report["identities"]["labelled_players"]),
+                                        position=report["position_error"], calibration=report["calibration"]["share"],
                                         speed=(report["motion"]["ours"]["mean_speed_m_s"], report["motion"]["labelled"]["mean_speed_m_s"]),
                                         suggestions={k: report["suggestions"][k] for k in ("total", "same", "different", "unknown")})), flush=True)
     print("written", out)

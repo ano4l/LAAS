@@ -13,6 +13,15 @@ def model_path(root: Path) -> Path:
     return next((path for path in (packaged, football, reference) if path.is_file()), packaged)
 
 
+def person_model_path(root: Path) -> Path | None:
+    """Optional general person detector used for people instead of the football weights. YOLO_PERSON_MODEL_PATH=off disables it."""
+    configured = os.getenv('YOLO_PERSON_MODEL_PATH')
+    if configured:
+        return None if configured.lower() == 'off' else Path(configured).expanduser().resolve()
+    packaged = root / 'models' / 'person.pt'
+    return packaged if packaged.is_file() else None
+
+
 def pitch_model_path(root: Path) -> Path | None:
     """Optional pitch-landmark pose model. YOLO_PITCH_MODEL_PATH=off disables it."""
     configured = os.getenv('YOLO_PITCH_MODEL_PATH')
@@ -34,6 +43,9 @@ def yolo_capabilities(root: Path) -> dict:
         blockers.append('YOLO_BALL_MODEL_PATH does not point to an existing ball detector file.')
     if os.getenv('YOLO_BALL_RESCUE_PATH') and not Path(os.environ['YOLO_BALL_RESCUE_PATH']).expanduser().is_file():
         blockers.append('YOLO_BALL_RESCUE_PATH does not point to an existing secondary ball model.')
+    person = person_model_path(root)
+    if person and not person.is_file():
+        blockers.append('YOLO_PERSON_MODEL_PATH does not point to an existing person detector file.')
     pitch = pitch_model_path(root)
     if pitch and not pitch.is_file():
         blockers.append('YOLO_PITCH_MODEL_PATH does not point to an existing pitch landmark model.')
@@ -44,5 +56,5 @@ def yolo_capabilities(root: Path) -> dict:
     if not encoder:
         blockers.append('Install imageio-ffmpeg for browser-compatible H.264 output.')
     return dict(engine='yolo_bytetrack', available=not blockers, model_path=str(path),
-                model_exists=path.is_file(), pitch_calibration=bool(pitch and pitch.is_file()), ultralytics_installed=installed,
+                model_exists=path.is_file(), person_detector=bool(person and person.is_file()), pitch_calibration=bool(pitch and pitch.is_file()), ultralytics_installed=installed,
                 opencv_available=opencv, encoder_available=encoder, blockers=blockers)
