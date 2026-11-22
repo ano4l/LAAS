@@ -3,9 +3,10 @@
 // other entry keeps its reason for being unavailable.
 import type { Review, TeamSummary } from "./ReviewPanel";
 
-export type MetricState = "calculated" | "partial" | "unavailable";
+export type MetricState = "calculated" | "partial" | "estimated" | "unavailable";
 /** `lines` are the figures; `note` says what is still missing or why nothing can be shown. */
-export type MetricValue = { state: MetricState; lines: string[]; note?: string };
+/** `estimate` is the video analysis's own figure, shown beneath figures counted from approved records and never added to them. */
+export type MetricValue = { state: MetricState; lines: string[]; note?: string; estimate?: { lines: string[]; note: string } };
 export type Side = "home" | "away";
 
 const SIDES: Side[] = ["home", "away"];

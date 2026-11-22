@@ -1,16 +1,20 @@
 import { useId, useMemo, useState } from "react";
 import { analyticsAreas, requiredFilters } from "./analytics-requirements";
 import { approvedMetric, type MetricState, type MetricValue, type Side } from "./approved-analytics";
+import { estimatedMetric } from "./estimated-analytics";
+import { useKits } from "./kits";
+import type { AnalysisResult } from "./main";
 import { num, secs, sentence, words } from "./format";
 import { PitchPicker } from "./PitchPicker";
 import type { PassNetwork, Review } from "./ReviewPanel";
 import { DataTable, Disclosure, EmptyState, Field } from "./ui";
 
-type Props = { saved: Review | null; unsaved?: boolean; onReview?: () => void };
+type Props = { result: AnalysisResult; saved: Review | null; unsaved?: boolean; onReview?: () => void };
 
 const STATE: Record<MetricState, { label: string; chip: string; meaning: string }> = {
   calculated: { label: "Calculated", chip: "chip--reviewed", meaning: "Calculated from saved, approved records for this clip." },
   partial: { label: "Partly calculated", chip: "chip--draft", meaning: "Part of this is calculated from approved records. The note says what is missing." },
+  estimated: { label: "~ Estimated from video", chip: "chip--estimated", meaning: "The model’s own estimate from the tracked ball and players. Not counted from approved events." },
   unavailable: { label: "Not available yet", chip: "chip--unknown", meaning: "Nothing is shown because the data it needs does not exist yet." },
 };
 
@@ -61,7 +65,8 @@ function PassNetworkFigure({ team, network }: { team: string; network: PassNetwo
  * Every analytic the product was asked for. An entry shows a figure only when saved, approved
  * records can supply it; every other entry says what it still needs. Nothing is estimated here.
  */
-export function AnalyticsDashboard({ saved, unsaved, onReview }: Props) {
+export function AnalyticsDashboard({ result, saved, unsaved, onReview }: Props) {
+  const kits = useKits();
   const instanceId = useId();
   const [activeId, setActiveId] = useState(analyticsAreas[0].id);
   const [query, setQuery] = useState("");
@@ -71,14 +76,20 @@ export function AnalyticsDashboard({ saved, unsaved, onReview }: Props) {
   const values = useMemo(() => {
     const map = new Map<string, MetricValue>();
     analyticsAreas.forEach(area => area.metrics.forEach(metric => {
-      // An entry approved events can supply says so itself when none are saved. The rest keep the data they need.
-      map.set(metric.id, (saved ? approvedMetric(metric.id, saved, ownSide) : null) ?? { state: "unavailable", lines: [], note: metric.needs });
+      // Figures counted from approved events come first. Where there are none, the model's own estimate from the
+      // video is shown as an estimate; where both exist, the estimate sits beneath and is never added in.
+      const approved = saved ? approvedMetric(metric.id, saved, ownSide) : null;
+      const estimate = estimatedMetric(metric.id, result, kits.label);
+      map.set(metric.id, approved && approved.state !== "unavailable" ? { ...approved, estimate: estimate ?? undefined }
+        : estimate ? { state: "estimated", lines: estimate.lines, note: estimate.note }
+        : approved ?? { state: "unavailable", lines: [], note: metric.needs });
     }));
     return map;
-  }, [saved, ownSide]);
+  }, [saved, ownSide, result, kits]);
   const shown = (areaId: string) => analyticsAreas.find(area => area.id === areaId)!.metrics.filter(metric => values.get(metric.id)!.state !== "unavailable").length;
   const total = analyticsAreas.reduce((sum, area) => sum + area.metrics.length, 0);
   const totalShown = analyticsAreas.reduce((sum, area) => sum + shown(area.id), 0);
+  const totalEstimated = [...values.values()].filter(value => value.state === "estimated").length;
   const matches = active.metrics.filter(metric => metric.label.toLowerCase().includes(query.trim().toLowerCase()));
   const s = saved?.summary;
   const approvedShots = saved?.events.filter(event => event.review_status === "approved" && event.type === "shot") ?? [];
@@ -89,17 +100,18 @@ export function AnalyticsDashboard({ saved, unsaved, onReview }: Props) {
       <div className="row row--between">
         <div>
           <h4 id={instanceId + "-title"}>{totalShown} of {total} requested analytics have figures for this clip</h4>
+          {totalShown > 0 && <p className="note">{totalShown - totalEstimated} counted from approved events · {totalEstimated} estimated from the video by the model.</p>}
           <p className="note" role="status">
             {!saved ? "Loading saved review records…"
-              : !s!.approved_events ? "No approved events are saved for this clip, so no event figures can be shown. Nothing is filled in from detections."
+              : !s!.approved_events ? "No approved events are saved for this clip yet, so nothing here is a counted event. Estimated rows are the model’s own reading of the video."
               : `From ${num(s!.approved_events, 0)} saved, approved ${s!.approved_events === 1 ? "event" : "events"}${s!.draft_events ? ` (${num(s!.draft_events, 0)} saved ${s!.draft_events === 1 ? "draft" : "drafts"} left out)` : ""}. ${s!.reviewed_video_pct ? `${num(s!.reviewed_video_pct)}% of the clip (${secs(s!.reviewed_seconds)}) is marked as reviewed.` : "No part of the clip is marked as reviewed, so events may be missing anywhere."}`}
           </p>
         </div>
         {onReview && <button type="button" className="btn btn--secondary btn--sm" onClick={onReview}>Record and approve events</button>}
       </div>
       <p className="note note--boxed">
-        <strong>These are totals for this clip, not for a match. </strong>
-        They count what a person recorded and approved, so anything not recorded is missing from them. Figures that need a season of matches, a pitch location on each event, GPS files or other teams’ data stay unavailable and say why.
+        <strong>These are figures for this clip, not for a match. </strong>
+        A row marked “Estimated from video” is the model’s reading of the tracked ball and players: it misses whatever it did not see, and it is not a counted event. A row marked “Calculated” counts events a person approved. Figures that need a season of matches, GPS files or other teams’ data stay unavailable and say why.
       </p>
       {unsaved && <p className="note note--boxed note--flood">Unsaved edits and unfinished forms under Review are not counted. Save the review to update these figures.</p>}
 
@@ -144,20 +156,26 @@ export function AnalyticsDashboard({ saved, unsaved, onReview }: Props) {
 
       {matches.length > 0 ? (
         <DataTable label={`${active.title}: requested metrics, their figures and what they need`} stack>
-          <thead><tr><th scope="col">Requested metric</th><th scope="col">Status</th><th scope="col">Figures from approved records</th><th scope="col">What it still needs</th></tr></thead>
+          <thead><tr><th scope="col">Requested metric</th><th scope="col">Status</th><th scope="col">Figures</th><th scope="col">How to read it</th></tr></thead>
           <tbody>
             {matches.map(metric => {
               const value = values.get(metric.id)!, state = STATE[value.state];
               return (
                 <tr key={metric.id}>
                   <th scope="row">{metric.label}</th>
-                  <td data-label="Status"><span className={`chip ${state.chip}`} title={state.meaning}>{value.state === "unavailable" && <i className="chip__swatch" aria-hidden="true" />}{state.label}</span></td>
-                  <td data-label="Figures from approved records" className="cell--prose">
+                  <td data-label="Status"><span className={`chip ${state.chip}`} title={state.meaning}>{(value.state === "unavailable" || value.state === "estimated") && <i className="chip__swatch" aria-hidden="true" />}{state.label}</span></td>
+                  <td data-label="Figures" className="cell--prose">
                     {value.lines.length
                       ? <div className="stack stack--sm">{value.lines.map(line => <span key={line}>{line}</span>)}</div>
                       : <span className="mono faint" aria-label="No calculated value">—</span>}
+                    {value.estimate && (
+                      <div className="stack stack--sm muted">
+                        <span><strong>Model estimate from the video, not added in:</strong></span>
+                        {value.estimate.lines.map(line => <span key={line}>{line}</span>)}
+                      </div>
+                    )}
                   </td>
-                  <td data-label="What it still needs" className="cell--prose">{value.note ?? (value.state === "calculated" ? "Nothing more at clip level. A match total needs the whole match reviewed." : metric.needs)}</td>
+                  <td data-label="How to read it" className="cell--prose">{value.note ?? (value.state === "calculated" ? "Nothing more at clip level. A match total needs the whole match reviewed." : metric.needs)}</td>
                 </tr>
               );
             })}
@@ -197,7 +215,7 @@ export function AnalyticsDashboard({ saved, unsaved, onReview }: Props) {
         </Disclosure>
       )}
       <p className="note">
-        Team names are the labels typed under Review. They are separate from the model’s kit groups, and nothing here comes from detections or possible events that have not been approved.
+        In counted rows, team names are the labels typed under Review. In estimated rows, the sides are the model’s kit-colour groups (Kit A and Kit B), which are not confirmed teams. The two are never mixed in one figure.
         {active.id === "opponents" && " “Your team” only changes which side is treated as the opponent."}
         {active.id === "workload" && " Workload and injury indicators support qualified staff review; they are not diagnoses."}
       </p>
