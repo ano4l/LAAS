@@ -181,10 +181,23 @@ def run_real_analysis(input_video: Path, output_root: Path, progress=None) -> di
         # estimate from player movement, which measured better for joining player tracks.
         # With a general person detector the football weights name a referee or goalkeeper in only some frames of a track,
         # so each track is given one role from all its frames before tracks are linked into identities.
-        roles, role_changes = {}, 0
+        from workers.video import off_pitch
+        from workers.video.people_boxes import PERSON_KINDS, apply_roles, settle_roles
+        roles, role_changes, settled = {}, 0, {}
         if getattr(detector, "person_model", None):
-            from workers.video.people_boxes import apply_roles, settle_roles
-            roles = settle_roles(link_rows, detector.default_role)
+            roles = settled = settle_roles(link_rows, detector.default_role)
+        # The pitch calibration is steadied over the clip here, before linking, so that people who stand off the pitch
+        # throughout (coaches, substitutes, stewards) can be set aside and never become player identities.
+        pitch_document, bystanders = None, {}
+        if pitch_model:
+            from workers.video.pitch_keypoints import document
+            with pitch_weights.open("rb") as weights:
+                pitch_document = document(pitch_frames, pitch_weights.name, hashlib.file_digest(weights, "sha256").hexdigest(), stride * pitch_stride,
+                                          (metadata["width"], metadata["height"], metadata["fps"]))
+            (out_dir / "pitch-calibration.json").write_text(json.dumps(pitch_document), encoding="utf-8")
+            bystanders = off_pitch.settle(link_rows, pitch_frames, keep={track for track, role in settled.items() if role == "referee"})
+            roles = {**roles, **bystanders}
+        if roles:
             apply_roles(link_rows, roles)
             apply_roles(preview, roles)
             track_classes.update({track: role for track, role in roles.items() if track in track_classes})
@@ -197,22 +210,14 @@ def run_real_analysis(input_video: Path, output_root: Path, progress=None) -> di
         # Analytics are computed after linking so they follow linked identities, not raw tracker IDs.
         linked_rows = json.loads((out_dir / "tracking.json").read_text(encoding="utf-8"))
         if roles:
-            from workers.video.people_boxes import PERSON_KINDS
             role_changes = apply_roles(linked_rows, roles)
             ball_kinds = {kind: n for kind, n in counts.items() if kind not in PERSON_KINDS}
-            counts = Counter(row["object_type"] for row in linked_rows if row["object_type"] in PERSON_KINDS)
+            counts = Counter(row["object_type"] for row in linked_rows if row["object_type"] in PERSON_KINDS | {off_pitch.ROLE})
             counts.update(ball_kinds)
         # Choose the ball path over the whole clip, then store the rows analytics will read.
         ball_path = select_ball_path(linked_rows, metadata, camera=camera)
         write_rows(out_dir / "tracking.json", linked_rows)
         scope = dict(sample_fps=metadata["fps"] / stride, decoded_frames=decoded)
-        pitch_document = None
-        if pitch_model:
-            from workers.video.pitch_keypoints import document
-            with pitch_weights.open("rb") as weights:
-                pitch_document = document(pitch_frames, pitch_weights.name, hashlib.file_digest(weights, "sha256").hexdigest(), stride * pitch_stride,
-                                          (metadata["width"], metadata["height"], metadata["fps"]))
-            (out_dir / "pitch-calibration.json").write_text(json.dumps(pitch_document), encoding="utf-8")
         warnings = ["Detections and track IDs are unreviewed model predictions, not verified player identities.",
                     "Jersey groups are anonymous colour estimates, not verified teams. Passes, tackles, shots, goals, possession and xG are not verified.",
                     "Coordinates are image pixels. Distance, speed and pitch heatmaps require camera calibration.",
@@ -257,8 +262,12 @@ def run_real_analysis(input_video: Path, output_root: Path, progress=None) -> di
                 summary['person_model_sha256']=hashlib.file_digest(stream,'sha256').hexdigest()
             summary['person_model']=person_weights.name
             summary['person_detection']='People come from a general person detector; the football weights supply the ball and the goalkeeper and referee labels. Each track has one role, settled from all its frames; role_hint keeps what each frame was called.'
-            summary['role_settling']=dict(tracks=len(roles),referee_tracks=sum(role=='referee' for role in roles.values()),
-                                          goalkeeper_tracks=sum(role=='goalkeeper' for role in roles.values()),rows_changed=role_changes)
+            summary['role_settling']=dict(tracks=len(settled),referee_tracks=sum(role=='referee' for role in settled.values()),
+                                          goalkeeper_tracks=sum(role=='goalkeeper' for role in settled.values()),rows_changed=role_changes)
+        summary['off_pitch']=(dict(status='applied',tracks=len(bystanders),observations=counts.get(off_pitch.ROLE,0),
+                                   rule=dict(margin_m=off_pitch.MARGIN_M,min_frames=off_pitch.MIN_FRAMES,min_share=off_pitch.MIN_SHARE),
+                                   note='Tracks whose foot point stays outside the pitch outline are set aside as off_pitch and are not players. It relies on the pitch calibration.')
+                              if pitch_document else dict(status='not_run',reason='No pitch calibration, so people beside the pitch are not told apart from players.'))
         if rescue_weights:
             with rescue_weights.open('rb') as stream:
                 summary['secondary_ball_model_sha256']=hashlib.file_digest(stream,'sha256').hexdigest()

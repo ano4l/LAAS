@@ -334,12 +334,16 @@ def score(rows, labels, pitch, suggestions=None, numbers=None):
                 used_r.add(i)
                 used_p.add(j)
                 followed[candidates[i]["track_id"]][people[j]["role"]] += 1
-    role_items = [dict(track_id=track, observations=sum(hinted[track].values()), labelled=dict(followed[track]), hinted=dict(hinted[track]), kits=dict(kit_votes[track]))
+    # Where each track's foot point falls against the pitch outline, to choose and check the rule that sets bystanders aside.
+    from workers.video import off_pitch
+    outside = off_pitch.measure([row for people in everyone.values() for row in people], pitch)
+    role_items = [dict(track_id=track, observations=sum(hinted[track].values()), labelled=dict(followed[track]), hinted=dict(hinted[track]), kits=dict(kit_votes[track]),
+                       outside=outside.get(track))
                   for track in sorted(hinted)]
 
     return dict(
         schema_version=VERSION, clip=labels["name"], action=labels["action"], visibility=labels["visibility"], frames=labels["frame_count"],
-        roles=dict(tracks=len(role_items), items=role_items),
+        roles=dict(tracks=len(role_items), items=role_items, outside_steps_m=list(off_pitch.STEPS_M), line_check=pk.lines_summary(pitch)["status"]),
         detection=dict(labelled_boxes=len(labelled), our_boxes=len(our_people), matched=len(pairs),
                        recall=round(len(pairs) / len(labelled), 3) if labelled else None,
                        precision=round(len(pairs) / len(our_people), 3) if our_people else None),

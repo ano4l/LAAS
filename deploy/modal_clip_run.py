@@ -74,7 +74,7 @@ def analyse_clip(name: str, person: str = "yolov8m"):
     volume.commit()
     summary = result["detection_summary"]
     return dict(name=name, run_id=result["run_id"], gpu=summary.get("gpu"), seconds=summary.get("processing_seconds"), person_model=summary.get("person_model"),
-                identities=len(summary.get("linked_tracks") or []), tracks=summary.get("unique_tracks"), roles=summary.get("role_settling"),
+                identities=len(summary.get("linked_tracks") or []), tracks=summary.get("unique_tracks"), roles=summary.get("role_settling"), off_pitch=summary.get("off_pitch"),
                 calibration=(summary.get("pitch_calibration") or {}).get("summary"), shirt_number_proposals=numbers.get("identities_proposed"),
                 files=sorted(path.name for path in run_dir.iterdir()))
 

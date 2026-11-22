@@ -71,6 +71,7 @@ export type AnalysisResult = {
     detections_by_class: Record<string, number>;
     tracks: { track_id: string; object_type: string; observations: number; first_seen_ms: number; last_seen_ms: number }[];
     track_linking?: { tracks_before: number; identities_after: number; links_accepted: number };
+    off_pitch?: { status: string; tracks?: number; observations?: number };
     linked_tracks?: { linked_track_id: string; track_ids: string[]; object_type: string; team: string | null; observations: number; first_seen_ms: number; last_seen_ms: number }[];
   };
   metadata: { filename: string; fps: number; frame_count: number; duration_seconds: number; width: number; height: number; sha256?: string };
