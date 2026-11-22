@@ -215,7 +215,7 @@ def run_real_analysis(input_video: Path, output_root: Path, progress=None) -> di
             counts = Counter(row["object_type"] for row in linked_rows if row["object_type"] in PERSON_KINDS | {off_pitch.ROLE})
             counts.update(ball_kinds)
         # Choose the ball path over the whole clip, then store the rows analytics will read.
-        ball_path = select_ball_path(linked_rows, metadata, camera=camera)
+        ball_path = select_ball_path(linked_rows, metadata, camera=camera, pitch=pitch_frames if pitch_model else None)
         write_rows(out_dir / "tracking.json", linked_rows)
         scope = dict(sample_fps=metadata["fps"] / stride, decoded_frames=decoded)
         warnings = ["Detections and track IDs are unreviewed model predictions, not verified player identities.",

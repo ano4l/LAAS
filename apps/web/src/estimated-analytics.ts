@@ -16,6 +16,7 @@ const CANDIDATES: Record<string, [string, string, string]> = {
   dribbles: ["possible_dribble", "possible dribble", "A player keeping the ball while an opponent came close and fell away. Whether it was a take-on is for a person to confirm."],
   interceptions: ["possible_turnover", "possible interception", "The ball going from one team’s player to the other team’s after travelling. Whether it was an interception or a loose pass is for a person to confirm."],
 };
+const PASS_NOTE = "A pass is counted when the model saw one player with the ball, the ball travelling on the pitch map, and then a different player with it. If that player is in the other kit group it counts as not completed, which also covers clearances and blocked crosses. Passes made while the ball was not detected are missing, so the counts are low and the percentage is rough. Not checked against tagged passes.";
 const TOUCH_NOTE = "From touches the model saw: the ball staying at one player’s feet. Two touches in a row by the same team’s players are taken as a pass, and by different teams as a change of possession. Touches the model missed are not counted, so these are low, and a pass is assumed, not seen.";
 
 /** Everything the estimates draw on, worked out once per clip. */
@@ -38,7 +39,9 @@ function context(result: AnalysisResult) {
   const pitch = insights?.collective_dynamics?.pitch;
   const moving = motion?.status === "estimated" ? motion : undefined;
   const teams = [...new Set([...touches.keys(), ...(sequences?.by_team ?? []).map(team => team.team), ...(moving?.teams ?? []).map(team => team.kit)])].sort();
-  return { insights, sequences, touches, passes, lost, won, byTrack, moving, pitch, teams };
+  // Passes found from the ball's path on the pitch map replace the touch-pair guess wherever the clip has them.
+  const seen = sequences?.passes?.status === "estimated" && sequences.passes.passes.length ? sequences.passes : undefined;
+  return { insights, sequences, touches, passes, lost, won, byTrack, moving, pitch, teams, seen };
 }
 
 const pitchNote = (pitch: ReturnType<typeof context>["pitch"]) =>
@@ -58,6 +61,15 @@ export function estimatedMetric(id: string, result: AnalysisResult, label: Label
   }
   switch (id) {
     case "passes": {
+      if (c.seen) {
+        const s = c.seen, total = s.counts.completed + s.counts.not_completed;
+        const lines = [
+          `About ${plural(total, "pass", "passes")} seen: ${n(s.counts.completed)} reached a team-mate, ${n(s.counts.not_completed)} did not (${n(100 * s.counts.completed / total)}% completed)`,
+          ...s.by_team.map(team => `${name(team.team)}: about ${n(team.completed)} of ${n(team.attempted)} completed (${n(team.completion_pct)}%) · ${n(team.mean_length_m)} m long on average`),
+        ];
+        if (s.counts.outcome_not_seen) lines.push(`${plural(s.counts.outcome_not_seen, "more ball")} struck long and not seen to reach anyone: not counted either way`);
+        return { lines, note: `${PASS_NOTE} Each one is listed with footage under Ball, where it can be turned into a review event with its outcome and places filled in.` };
+      }
       if (!c.touches.size) return null;
       return { lines: c.teams.filter(team => c.touches.has(team)).map(team => `${name(team)}: about ${plural(c.passes.get(team) ?? 0, "pass", "passes")} between its own players, from ${plural(c.touches.get(team)!, "touch", "touches")} the model saw`), note: `${TOUCH_NOTE} Completion cannot be estimated: a pass that went astray is not seen as a pass.` };
     }
@@ -78,7 +90,8 @@ export function estimatedMetric(id: string, result: AnalysisResult, label: Label
         `${name(a)} – ${name(b)}`,
         pair("Share of known possession, with the assumption", team => retention.get(team) == null ? null : `${n(retention.get(team)!, 1)}%`),
         pair("Touches the model saw", team => c.touches.has(team) ? n(c.touches.get(team)!) : null),
-        pair("Passes between own players, about", team => c.touches.has(team) ? n(c.passes.get(team) ?? 0) : null),
+        c.seen ? pair("Passes completed, of those seen", team => { const row = c.seen!.by_team.find(item => item.team === team); return row ? `${n(row.completed)} of ${n(row.attempted)}` : "0 of 0"; })
+          : pair("Passes between own players, about", team => c.touches.has(team) ? n(c.passes.get(team) ?? 0) : null),
         pair("Distance covered by tracked players", team => motion.get(team) ? `${n(motion.get(team)!.distance_m)} m` : null),
         pair("Average speed", team => motion.get(team)?.mean_speed_m_s != null ? `${n(motion.get(team)!.mean_speed_m_s!, 1)} m/s` : null),
       ].filter((line): line is string => line !== null);
@@ -87,10 +100,11 @@ export function estimatedMetric(id: string, result: AnalysisResult, label: Label
     case "key-players":
     case "player-statistics": {
       const moved = new Map((c.moving?.players ?? []).map(player => [player.track_id, player]));
-      const tracks = [...new Set([...c.byTrack.keys(), ...moved.keys()])].map(track => ({ track, touches: c.byTrack.get(track)?.touches ?? 0, team: c.byTrack.get(track)?.team ?? moved.get(track)?.kit ?? null, motion: moved.get(track) }));
+      const passing = new Map((c.seen?.by_player ?? []).map(player => [player.track_id, player]));
+      const tracks = [...new Set([...c.byTrack.keys(), ...moved.keys(), ...passing.keys()])].map(track => ({ track, touches: c.byTrack.get(track)?.touches ?? 0, team: c.byTrack.get(track)?.team ?? passing.get(track)?.team ?? moved.get(track)?.kit ?? null, motion: moved.get(track), passing: passing.get(track) }));
       if (!tracks.length) return null;
       const ranked = tracks.sort((x, y) => y.touches - x.touches || (y.motion?.distance_m ?? 0) - (x.motion?.distance_m ?? 0));
-      const line = (row: typeof ranked[number]) => `${row.track} (${label(row.team, "no kit group")}): ${plural(row.touches, "touch", "touches")}${row.motion ? ` · ${n(row.motion.distance_m)} m in ${n(row.motion.measured_seconds, 1)} s · ${n(row.motion.mean_speed_m_s, 1)} m/s average · fastest ${n(row.motion.fastest_hop_m_s, 1)} m/s` : ""}`;
+      const line = (row: typeof ranked[number]) => `${row.track} (${label(row.team, "no kit group")}): ${plural(row.touches, "touch", "touches")}${row.passing?.attempted ? ` · about ${n(row.passing.completed)} of ${plural(row.passing.attempted, "pass", "passes")} completed` : ""}${row.passing?.received ? ` · received ${n(row.passing.received)}` : ""}${row.motion ? ` · ${n(row.motion.distance_m)} m in ${n(row.motion.measured_seconds, 1)} s · ${n(row.motion.mean_speed_m_s, 1)} m/s average · fastest ${n(row.motion.fastest_hop_m_s, 1)} m/s` : ""}`;
       return id === "key-players"
         ? { lines: ranked.slice(0, 3).map(line), note: "Tracked identities ranked by touches the model saw, then by distance. They are not named players: one player can be more than one identity. Name them under Players." }
         : { lines: [`${plural(tracks.length, "tracked identity", "tracked identities")} with touches or measured movement`, ...ranked.slice(0, 5).map(line)], note: `${ranked.length > 5 ? `Showing 5 of ${ranked.length}; every profile is under Players. ` : ""}Tracked identities, not named players. Distance and speed are for the time each was measured on the pitch map.` };

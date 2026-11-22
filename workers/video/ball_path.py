@@ -20,7 +20,7 @@ import numpy as np
 from workers.video.camera_motion import CameraMotion
 
 BALLS = {"ball", "sports ball"}
-VERSION = "ball-path-1"
+VERSION = "ball-path-2"
 
 
 @dataclass(frozen=True)
@@ -48,6 +48,17 @@ class PathSettings:
     static_min_frames: int = 6
     static_min_seconds: float = 1.5
     static_max_confidence: float = 0.5   # no detection at the spot reaches this
+    # A painted penalty spot or centre spot is round and white, and is detected as a ball with high confidence.
+    # With a pitch calibration, candidates that sit still on one of those spots on the pitch map for a second or
+    # more, with nobody beside them most of that time, are the paint. A ball placed there with a player standing
+    # over it (a kick-off) is kept; a ball left alone on a penalty spot is not seen until it is struck.
+    spot_radius_m: float = 2.5           # how far from the spot's place on the pitch map a candidate may sit
+    spot_spread_m: float = 0.75          # it is still when candidates this close to it
+    spot_still_seconds: float = 0.6      # are found over this long, within a second either side
+    spot_min_frames: int = 6
+    spot_min_seconds: float = 1.5
+    spot_player_m: float = 2.0           # a player this close is standing over it
+    spot_unattended_share: float = 0.7   # of its frames with nobody that close
 
 
 def _centre(box):
@@ -119,6 +130,53 @@ def _static(frames, points, scenes, confidence, fps, settings):
     return static
 
 
+PEOPLE = {"person", "player", "goalkeeper", "referee"}
+
+
+def _painted(nodes, rows, pitch, fps, settings):
+    """Which ball candidates are a painted spot on the pitch (see PathSettings). `pitch` is {frame_idx: calibration record}."""
+    from workers.video import pitch_keypoints as pk
+    painted = np.zeros(len(nodes), bool)
+    feet = defaultdict(list)
+    for row in rows:
+        if row["object_type"] in PEOPLE and row.get("bbox"):
+            feet[row["frame_idx"]].append(((row["bbox"][0] + row["bbox"][2]) / 2, row["bbox"][3]))
+    by_frame = defaultdict(list)
+    for index, node in enumerate(nodes):
+        by_frame[node["frame_idx"]].append(index)
+    place, attended = {}, {}
+    for frame, indices in by_frame.items():
+        record = pitch.get(frame)
+        if not record or record.get("status") != "calibrated":
+            continue
+        xy, _ = pk.to_pitch(record, [_centre(nodes[i]["bbox"]) for i in indices] + feet[frame])
+        people = xy[len(indices):]
+        people = people[~np.isnan(people[:, 0])]
+        for i, point in zip(indices, xy):
+            if not np.isnan(point[0]):
+                place[i] = point
+                attended[i] = bool(len(people)) and float(np.linalg.norm(people - point, axis=1).min()) <= settings.spot_player_m
+    for spot in ((11., pk.WIDTH_M / 2), (pk.LENGTH_M - 11., pk.WIDTH_M / 2), (pk.LENGTH_M / 2, pk.WIDTH_M / 2)):
+        near = [i for i, point in place.items() if np.linalg.norm(point - spot) <= settings.spot_radius_m]
+        if len(near) < settings.spot_min_frames:
+            continue
+        # Still is judged a second at a time, so a calibration that drifts over the clip does not hide the spot,
+        # and a ball rolling through the area, which is not still, is kept.
+        still = []
+        for i in near:
+            beside = [nodes[j]["frame_idx"] for j in near if abs(nodes[j]["frame_idx"] - nodes[i]["frame_idx"]) <= fps
+                      and np.linalg.norm(place[j] - place[i]) <= settings.spot_spread_m]
+            if (max(beside) - min(beside)) / fps >= settings.spot_still_seconds:
+                still.append(i)
+        if not still:
+            continue
+        frames = sorted({nodes[i]["frame_idx"] for i in still})
+        if (len(frames) >= settings.spot_min_frames and (frames[-1] - frames[0]) / fps >= settings.spot_min_seconds
+                and sum(not attended[i] for i in still) / len(still) >= settings.spot_unattended_share):
+            painted[still] = True
+    return painted
+
+
 def _segments(chain):
     segments = []
     for index, continued in chain:
@@ -128,8 +186,10 @@ def _segments(chain):
     return segments
 
 
-def select_ball_path(rows, metadata, settings=PathSettings(), camera=None):
+def select_ball_path(rows, metadata, settings=PathSettings(), camera=None, pitch=None):
     """Mark the chosen ball candidates in `rows` (in place) and return a summary.
+
+    `pitch` ({frame_idx: calibration record}) lets painted spots be told from the ball; without it they are not.
 
     Each ball row gets ball_selected (offline choice), ball_selected_online (the
     previous frame-by-frame choice, when present), ball_path_segment and
@@ -146,6 +206,7 @@ def select_ball_path(rows, metadata, settings=PathSettings(), camera=None):
         row["ball_selected"] = False
         row["ball_path_segment"] = None
         row["ball_path_support"] = None
+        row.pop("ball_rejected", None)
     nodes = sorted((r for r in balls if r["confidence"] >= settings.min_confidence), key=lambda r: r["frame_idx"])
     summary = dict(version=VERSION, candidate_rows=len(balls), candidate_frames=len({r["frame_idx"] for r in balls}),
                    selected_online=online, settings=asdict(settings),
@@ -154,7 +215,7 @@ def select_ball_path(rows, metadata, settings=PathSettings(), camera=None):
                                 "A wrong candidate that moves plausibly near a confident detection can still be selected."])
     if not nodes:
         return dict(summary, selected=0, segments=0, unanchored_candidates_rejected=0, static_candidates_rejected=0,
-                    weak_candidates_not_bridged=0)
+                    painted_spot_candidates_rejected=0, weak_candidates_not_bridged=0)
     frames = np.array([r["frame_idx"] for r in nodes])
     # Positions with camera motion removed, as a share of the image diagonal.
     points = np.array([camera.stabilise(r["frame_idx"], _centre(r["bbox"])) / diagonal for r in nodes])
@@ -167,6 +228,11 @@ def select_ball_path(rows, metadata, settings=PathSettings(), camera=None):
     # recomputed, so a real ball they were hiding can be picked up instead.
     active = ~_static(frames, points, scenes, confidence, fps, settings)
     static_rejected = int((~active).sum())
+    painted = _painted(nodes, rows, pitch, fps, settings) if pitch else np.zeros(len(nodes), bool)
+    for index in np.flatnonzero(painted):
+        nodes[index]["ball_rejected"] = "painted_spot"
+    painted_rejected = int((painted & active).sum())
+    active &= ~painted
     while True:
         segments = _segments(_best_chain(frames, points, scenes, emit, active, fps, settings))
         weak = [s for s in segments if confidence[s].max() < settings.anchor_confidence]
@@ -190,5 +256,5 @@ def select_ball_path(rows, metadata, settings=PathSettings(), camera=None):
             nodes[index]["ball_path_support"] = "confident" if confidence[index] >= settings.anchor_confidence else "weak_between_confident"
     return dict(summary, selected=sum(1 for r in nodes if r["ball_selected"]), segments=len(segments),
                 weak_candidates_not_bridged=unbridged,
-                unanchored_candidates_rejected=int((~active).sum()) - static_rejected,
-                static_candidates_rejected=static_rejected, camera_motion=camera.source)
+                unanchored_candidates_rejected=int((~active).sum()) - static_rejected - painted_rejected,
+                static_candidates_rejected=static_rejected, painted_spot_candidates_rejected=painted_rejected, camera_motion=camera.source)

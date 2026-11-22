@@ -27,7 +27,7 @@ class VideoMeasurements:
         width, height = self.metadata["width"], self.metadata["height"]
         timestamp = frame_idx / self.metadata["fps"]
         players = [r for r in rows if r["object_type"] in PLAYERS]
-        balls = [r for r in rows if r["object_type"] in BALLS]
+        balls = [r for r in rows if r["object_type"] in BALLS and not r.get("ball_rejected")]  # a painted spot is not a ball candidate
         selected = [r for r in balls if r.get('ball_selected')]
         self.selected_ball_frames += bool(selected)
         self.frames += 1

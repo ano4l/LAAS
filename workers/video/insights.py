@@ -7,7 +7,7 @@ from collections import Counter, defaultdict
 from itertools import groupby
 import math
 
-VERSION = "video-insights-9"
+VERSION = "video-insights-10"
 PLAYERS = {"player", "goalkeeper", "person"}
 BALLS = {"ball", "sports ball"}
 
@@ -193,7 +193,18 @@ class VideoInsights:
         from workers.video.sequences import infer_sequences
         sequences = infer_sequences(self.frames, self.meta, self.fps, self.context, self.pitch)
         # One review queue: passes and turnovers, then the rule-based shots, tackles, duels and dribbles.
-        candidates = sorted(sequences['candidates']+sequences['actions']['candidates'], key=lambda e: e['timestamp_seconds'])
+        # A pass estimated on the pitch map joins the queue unless the stricter image rule already lists the same two players
+        # at that moment; that one then carries the pass's place and outcome, for the review form.
+        listed = sequences['candidates']
+        extra = []
+        for row in sequences['passes']['passes']:
+            same = next((e for e in listed if e['from_track'] == row['from_track'] and e['to_track'] == row['to_track']
+                         and abs(e['timestamp_seconds']-row['timestamp_seconds']) <= 2), None)
+            if same:
+                same.update({key: row[key] for key in ('start_m', 'end_m', 'length_m', 'suggested_outcome')})
+            else:
+                extra.append(row)
+        candidates = sorted(listed+extra+sequences['actions']['candidates'], key=lambda e: e['timestamp_seconds'])
         grouped_seconds = sum(kit_seconds.values())
         controls = dict(estimated_control_seconds=round(control_seconds, 3), unknown_seconds=round(max(0, duration-control_seconds), 3),
                         coverage_pct=pct(control_seconds, duration), grouped_control_seconds=round(grouped_seconds, 3),

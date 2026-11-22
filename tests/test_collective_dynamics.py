@@ -83,6 +83,6 @@ def test_full_tracking_integration_includes_empty_frames_and_v3_schema():
             rows.append(dict(frame_idx=i,object_type='player',track_id=p['track'],bbox=[p['x']-5,p['y']-50,p['x']+5,p['y']],
                 confidence=.9,team='kit-A',scene_id=0))
     out=from_tracking(rows,META,dict(sample_fps=10,decoded_frames=20))
-    assert out['schema_version']=='video-insights-9'
+    assert out['schema_version']=='video-insights-10'
     assert out['collective_dynamics']['teams'][0]['source_coverage_pct']==25
     assert out['collective_dynamics']['formation']['label'] is None

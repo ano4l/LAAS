@@ -63,8 +63,9 @@ type ReviewDraft = { review: Review; saved: Review; event: Annotation; editing: 
 const reviewDrafts = new Map<string, ReviewDraft>();
 // A candidate a person chose to draft elsewhere in the app. It only fills in the form: applying, saving and approving stay with the reviewer.
 const PROPOSAL_EVENT = "laas:review-proposal";
-let proposal: { runId: string; timestamp_seconds: number; type: string; notes: string } | null = null;
-export function proposeReviewEvent(runId: string, draft: { timestamp_seconds: number; type: string; notes: string }) {
+type Proposal = { timestamp_seconds: number; type: string; notes: string; outcome?: string; location?: PitchPoint | null; end_location?: PitchPoint | null };
+let proposal: ({ runId: string } & Proposal) | null = null;
+export function proposeReviewEvent(runId: string, draft: Proposal) {
   proposal = { runId, ...draft };
   window.dispatchEvent(new Event(PROPOSAL_EVENT));
 }
@@ -124,10 +125,14 @@ export function ReviewPanel({ runId, duration, api, authHeaders, onSaved, onUnsa
   }, []);
   useEffect(() => {
     if (!review || !proposal || proposal.runId !== runId) return;
-    const { timestamp_seconds, type, notes } = proposal;
+    const { timestamp_seconds, type, notes, outcome, location, end_location } = proposal;
     proposal = null;
     if (eventDirty) { setError("The event form already holds unapplied work. Apply or cancel it, then choose the possible event again."); return; }
-    setEvent({ ...freshEvent(), timestamp_seconds: Math.max(0, Math.min(duration - .001, timestamp_seconds)), type: type in outcomes ? type as EventType : "pass", notes: notes.slice(0, 1000) });
+    const kind = type in outcomes ? type as EventType : "pass";
+    // A suggested outcome and places come from the model. They fill the draft only; the person still has to approve it.
+    const onPitch = (point?: PitchPoint | null) => point && point.x >= 0 && point.x <= 105 && point.y >= 0 && point.y <= 68 ? { x: point.x, y: point.y } : null;
+    setEvent({ ...freshEvent(), timestamp_seconds: Math.max(0, Math.min(duration - .001, timestamp_seconds)), type: kind, notes: notes.slice(0, 1000),
+      outcome: outcome && (outcomes[kind] as readonly string[]).includes(outcome) ? outcome : "unknown", location: onPitch(location), end_location: onPitch(end_location) });
     setEditing(false); setEventDirty(true); setError("");
     // Only a new proposal or a newly loaded review fills the form, not later edits to it.
   }, [review?.run_id, runId, proposed]);

@@ -15,9 +15,11 @@ export type Candidate = { id: string; type: string; timestamp_seconds: number; s
   /** Set on rule-based shots, tackles, duels and dribbles, and names the Review event type a person would record. */
   suggested_review_type?: string; basis?: string; ball_speed_heights_per_second?: number; goalkeeper_track?: string; estimated_distance_m?: number;
   players_closest_heights?: number; ball_travel_heights?: number; contested_seconds?: number; next_touch_track?: string | null; next_touch_team?: string | null;
-  opponent_closest_heights?: number; carried_seconds?: number };
-/** What the Review form is started with when a person chooses to draft a candidate. */
-export type CandidateDraft = { timestamp_seconds: number; type: string; notes: string };
+  opponent_closest_heights?: number; carried_seconds?: number;
+  /** Set on passes estimated on the pitch map: where it started and ended in metres, and whether it reached a team-mate. */
+  start_m?: { x: number; y: number }; end_m?: { x: number; y: number }; length_m?: number; seconds?: number; fastest_m_s?: number; outcome?: string; suggested_outcome?: string };
+/** What the Review form is started with when a person chooses to draft a candidate. The outcome and places are the model's suggestion, for the person to correct. */
+export type CandidateDraft = { timestamp_seconds: number; type: string; notes: string; outcome?: string; location?: { x: number; y: number } | null; end_location?: { x: number; y: number } | null };
 export type VideoInsights = {
   schema_version: string; source: string; review_status: string; coordinate_system: string;
   source_video?: { filename?: string; sha256?: string; width?: number; height?: number; fps?: number; frame_count?: number };
@@ -59,6 +61,9 @@ function candidateDetail(event: Candidate) {
     case "possible_tackle": return `Players ${num(event.players_closest_heights)} player heights apart at their closest · ball moved ${num(event.ball_travel_heights)} heights between them`;
     case "possible_duel": return `Ball about equally close to both for ${secs(event.contested_seconds ?? 0, 2)} · ${event.next_touch_track ? `next controlled touch: track ${event.next_touch_track}` : "no controlled touch soon after"}`;
     case "possible_dribble": return `Ball kept for ${secs(event.carried_seconds ?? 0, 2)} · opponent came within ${num(event.opponent_closest_heights)} player heights`;
+    case "possible_pass": case "possible_turnover":
+      return event.length_m == null ? null
+        : `About ${num(event.length_m, 0)} m on the pitch map${event.seconds != null ? ` in ${secs(event.seconds, 1)}` : ""}${event.outcome ? ` · ${event.outcome === "completed" ? "the next player with the ball was a team-mate" : "the next player with the ball was in the other kit group"}` : ""}`;
     default: return null;
   }
 }
@@ -404,7 +409,9 @@ export function CandidateQueue({ data, onDraft }: { data: VideoInsights; onDraft
   const ruleBased = data.candidates.some(event => event.evidence_level === "rule_based_review_only");
   const draft = (event: Candidate) => onDraft?.({
     timestamp_seconds: event.timestamp_seconds, type: event.suggested_review_type ?? "pass",
-    notes: `Started from the automatic candidate ${event.id} (${candidateName(event.type).toLowerCase()}): ${candidatePlayers(event)}${event.from_kit ? ` · ${kits.label(event.from_kit)}` : ""}${event.to_kit && event.to_kit !== event.from_kit ? ` and ${kits.label(event.to_kit)}` : ""}.`,
+    notes: `Started from the automatic candidate ${event.id} (${candidateName(event.type).toLowerCase()}): ${candidatePlayers(event)}${event.from_kit ? ` · ${kits.label(event.from_kit)}` : ""}${event.to_kit && event.to_kit !== event.from_kit ? ` and ${kits.label(event.to_kit)}` : ""}.${event.start_m ? " The outcome and the two places on the pitch are the model’s suggestion: check them against the footage." : ""}`,
+    outcome: (event.suggested_review_type ?? "pass") === "pass" ? event.suggested_outcome : undefined,
+    location: event.start_m ?? null, end_location: (event.suggested_review_type ?? "pass") === "pass" ? event.end_m ?? null : null,
   });
   const pages = Math.max(1, Math.ceil(matches.length / 6));
   const current = Math.min(page, pages - 1);
@@ -440,6 +447,7 @@ export function CandidateQueue({ data, onDraft }: { data: VideoInsights; onDraft
               {event.supported_control_seconds !== undefined
                 ? <p className="note">{secs(event.supported_control_seconds, 2)} supported control at both ends · {event.observed_bridge_frames} observed bridge frames · scene {event.scene_id + 1}</p>
                 : <p className="note">{candidateDetail(event)} · scene {event.scene_id + 1}</p>}
+              {event.supported_control_seconds !== undefined && event.length_m != null && <p className="note">{candidateDetail(event)}</p>}
               {event.from_team && event.supported_control_seconds !== undefined && <p className="note">Estimated group or team: {kits.label(event.from_team)} → {kits.label(event.to_team, "Unknown")}</p>}
               {event.ball_support_pct !== undefined && (
                 <p className="note">
