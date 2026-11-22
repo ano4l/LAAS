@@ -7,7 +7,7 @@ from collections import Counter, defaultdict
 from itertools import groupby
 import math
 
-VERSION = "video-insights-8"
+VERSION = "video-insights-9"
 PLAYERS = {"player", "goalkeeper", "person"}
 BALLS = {"ball", "sports ball"}
 
@@ -36,7 +36,7 @@ class VideoInsights:
             kit = (f"scene-{r.get('scene_id', 0)}/{r['team']}" if r.get("team")
                    and r.get("team_assignment_confidence", 1) >= .25 else None)
             players.append(dict(track=r.get("track_id"), kit=kit, scene=r.get("scene_id", 0),
-                                x=(a+c)/2, y=d, height=max(1, d-b), confidence=r["confidence"]))
+                                x=(a+c)/2, y=d, height=max(1, d-b), confidence=r["confidence"], role=r["object_type"]))
         balls = [r for r in rows if r["object_type"] in BALLS]
         # In a legacy run with no continuity labels, only a single raw ball is eligible.
         selected = ([r for r in balls if r.get("ball_selected")]
@@ -191,8 +191,9 @@ class VideoInsights:
                 observed_bridge_frames=len(bridge), review_status="unreviewed", evidence="Sustained control at both ends; observed ball bridge; distinct tracks and separated image positions."))
 
         from workers.video.sequences import infer_sequences
-        sequences = infer_sequences(self.frames, self.meta, self.fps, self.context)
-        candidates = sequences['candidates']
+        sequences = infer_sequences(self.frames, self.meta, self.fps, self.context, self.pitch)
+        # One review queue: passes and turnovers, then the rule-based shots, tackles, duels and dribbles.
+        candidates = sorted(sequences['candidates']+sequences['actions']['candidates'], key=lambda e: e['timestamp_seconds'])
         grouped_seconds = sum(kit_seconds.values())
         controls = dict(estimated_control_seconds=round(control_seconds, 3), unknown_seconds=round(max(0, duration-control_seconds), 3),
                         coverage_pct=pct(control_seconds, duration), grouped_control_seconds=round(grouped_seconds, 3),
@@ -219,6 +220,8 @@ class VideoInsights:
         if grouped_seconds < duration*.2:
             notes.append(dict(kind="limitation", text="Kit control coverage is below 20% of this clip. Group shares cannot describe match possession."))
         notes.append(dict(kind="events", text=f"{len([e for e in candidates if e['type']=='possible_pass'])} possible passes and {len([e for e in candidates if e['type']=='possible_turnover'])} possible turnovers meet the evidence rules. Review each in the source video."))
+        counts = sequences['actions']['counts']
+        notes.append(dict(kind="actions", text=f"{counts['shot']} possible shots, {counts['tackle']} possible tackles, {counts['duel']} possible duels and {counts['dribble']} possible dribbles were proposed by rules over the tracked ball and players. They have not been checked against labelled events and miss most real ones; none is counted until a person records it under Review."))
         notes.append(dict(kind="possession", text=f"Temporal team estimates support {sequences['known_seconds']:.2f}s; {sequences['unknown_seconds']:.2f}s is unknown and {sequences['contested_seconds']:.2f}s contested. Shares cover known time only."))
         bookmarks = []
         if slices and selected_seconds:
@@ -252,9 +255,10 @@ class VideoInsights:
             definitions=dict(control="Estimated control requires one observed ball, a clearly nearer tracked player foot point and sustained consecutive support. Unknown gaps are never filled. This is not verified possession.",
                 shares="Kit shares divide only sustained control assigned to anonymous scene-scoped kit groups. Clip shares and unknown time retain the full source duration denominator.",
                 events="Temporal candidates link supported receivers to departures and allow motion-supported one-touch anchors. Strong transitions allow <=0.25s missing-ball gaps and >=65% observed support. Partial-tracking review-only candidates allow <=0.75s gaps and >=35% support with at least three observed positions; their flight never enters possession totals. Transit is bounded at four seconds. No coordinates are invented. Cuts, confirmed stoppages, contested/third-player transitions and near-position identity splits are rejected. These are unvalidated review candidates, not approved events.",
+                actions="Possible shots, tackles, duels and dribbles come from rules over tracked positions, measured in player heights. A tackle is the ball changing kit group at close range; a duel is two opponents about equally close to the ball; a dribble is a player keeping the ball while an opponent comes close and falls away; a shot is a fast ball heading at a detected goalkeeper or at a goal on the estimated pitch map. They need the ball and both players to be tracked, so most real events are missed, and none has been checked against labelled events.",
                 shape="Shape uses at least three visible grouped players per frame, weighted by sampled time, in five-second windows. Image width/depth/centroid include camera motion and perspective, and are not pitch distances or formation labels.",
                 zones="Left/centre/right thirds and grids refer to the camera image, not attacking/defending pitch zones. Ball paths contain observed positions only; segment IDs split gaps, cuts and jumps.",
-                confidence="Detection confidence and heuristic support are not measured accuracy. No named player, home/away identity, completed pass, shot, xG or calibrated physical metric is inferred."))
+                confidence="Detection confidence and heuristic support are not measured accuracy. No named player, home/away identity, completed pass, confirmed shot, xG or calibrated physical metric is inferred."))
 
 
 def from_tracking(rows, metadata, summary, context=None, pitch=None):

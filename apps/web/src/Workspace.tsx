@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CircleDot, ClipboardCheck, FolderDown, LayoutDashboard, Rewind, FastForward, Shapes, Timer, Users } from "lucide-react";
+import { BarChart3, CircleDot, ClipboardCheck, FolderDown, LayoutDashboard, Rewind, FastForward, Shapes, Timer, Users } from "lucide-react";
 import type { AnalysisResult } from "./main";
 import type { Review } from "./ReviewPanel";
 import { Timeline } from "./Timeline";
@@ -13,11 +13,12 @@ import { BallTab } from "./tabs/BallTab";
 import { ShapeTab } from "./tabs/ShapeTab";
 import { PlayersTab } from "./tabs/PlayersTab";
 import { ReviewTab } from "./tabs/ReviewTab";
+import { AnalyticsTab } from "./tabs/AnalyticsTab";
 import { FilesTab } from "./tabs/FilesTab";
 
-export type TabId = "summary" | "possession" | "ball" | "shape" | "players" | "review" | "files";
+export type TabId = "summary" | "possession" | "ball" | "shape" | "players" | "analytics" | "review" | "files";
 
-const TAB_IDS: TabId[] = ["summary", "possession", "ball", "shape", "players", "review", "files"];
+const TAB_IDS: TabId[] = ["summary", "possession", "ball", "shape", "players", "analytics", "review", "files"];
 const readHash = (): TabId => {
   const hash = window.location.hash.slice(1) as TabId;
   return TAB_IDS.includes(hash) ? hash : "summary";
@@ -48,7 +49,10 @@ export function Workspace(props: Props) {
 
 function ClipWorkspace({ result, active, openRequest, api, authHeaders, onRefreshResult }: Props) {
   const playback = usePlayback();
-  const [tab, setTabState] = useState<TabId>(readHash);
+  const [chosenTab, setTabState] = useState<TabId>(readHash);
+  // A video uploaded only for tagging has no model output, so the tabs that show model output are left out.
+  const reviewOnly = result.engine === "review_only";
+  const tab: TabId = reviewOnly && !["review", "analytics", "files"].includes(chosenTab) ? "review" : chosenTab;
   const [savedReview, setSavedReview] = useState<Review | null>(null);
   const [reviewUnsaved, setReviewUnsaved] = useState(false);
   const analysis = useRef<HTMLDivElement>(null);
@@ -101,9 +105,10 @@ function ClipWorkspace({ result, active, openRequest, api, authHeaders, onRefres
     { id: "ball", label: "Ball", icon: CircleDot, count: insights?.candidates.length ? insights.candidates.length : undefined },
     { id: "shape", label: "Shape", icon: Shapes },
     { id: "players", label: "Players", icon: Users },
+    { id: "analytics", label: "Analytics", icon: BarChart3 },
     { id: "review", label: "Review", icon: ClipboardCheck, count: saved?.summary.approved_events ? saved.summary.approved_events : undefined },
     { id: "files", label: "Files", icon: FolderDown },
-  ];
+  ].filter(item => !reviewOnly || ["review", "analytics", "files"].includes(item.id)) as TabDef<TabId>[];
   const tabProps = { result, saved, goTab };
 
   return (
@@ -117,7 +122,7 @@ function ClipWorkspace({ result, active, openRequest, api, authHeaders, onRefres
 
           <div className="player" ref={player}>
             {result.files.annotated_video
-              ? <video key={result.run_id} ref={playback.attach} controls playsInline preload="metadata" src={media(result.files.annotated_video)} aria-label={`Annotated video of ${result.metadata.filename}. Boxes are unreviewed model predictions.`} />
+              ? <video key={result.run_id} ref={playback.attach} controls playsInline preload="metadata" src={media(result.files.annotated_video)} aria-label={reviewOnly ? `Video of ${result.metadata.filename}, uploaded for tagging by hand.` : `Annotated video of ${result.metadata.filename}. Boxes are unreviewed model predictions.`} />
               : <p className="player__missing">An annotated video is not available for this run.</p>}
           </div>
 
@@ -126,13 +131,13 @@ function ClipWorkspace({ result, active, openRequest, api, authHeaders, onRefres
           <div className="transport">
             <button type="button" className="btn btn--secondary btn--sm" onClick={() => playback.nudge(-5)} aria-label="Back 5 seconds"><Rewind size={14} aria-hidden="true" /> −5 s</button>
             <button type="button" className="btn btn--secondary btn--sm" onClick={() => playback.nudge(5)} aria-label="Forward 5 seconds">+5 s <FastForward size={14} aria-hidden="true" /></button>
-            <p>Boxes are predictions. Review against the footage.</p>
+            <p>{reviewOnly ? "No detection was run on this video. Record what you see under Review." : "Boxes are predictions. Review against the footage."}</p>
           </div>
 
-          <Disclosure summary="Source & model details">
+          <Disclosure summary={reviewOnly ? "Source details" : "Source & model details"}>
             <div className="sourcefacts">
-              <p>Source: {result.metadata.width} × {result.metadata.height} · {loose(result.metadata.fps)} fps · {num(result.metadata.frame_count, 0)} frames. Analysis sampling: {loose(summary?.sample_fps)} fps.</p>
-              <p>Model: {summary?.model ?? "Unknown"} · Tracker: {summary?.tracker ?? "Not recorded"} · Detector input: {summary?.image_size ?? "Unknown"} px · Device: {summary?.device ?? "Unknown"}.</p>
+              <p>Source: {result.metadata.width} × {result.metadata.height} · {loose(result.metadata.fps)} fps · {num(result.metadata.frame_count, 0)} frames.{reviewOnly ? "" : ` Analysis sampling: ${loose(summary?.sample_fps)} fps.`}</p>
+              {!reviewOnly && <p>Model: {summary?.model ?? "Unknown"} · Tracker: {summary?.tracker ?? "Not recorded"} · Detector input: {summary?.image_size ?? "Unknown"} px · Device: {summary?.device ?? "Unknown"}.</p>}
               <p>{result.report.summary}</p>
               {result.warnings?.length ? <ul>{result.warnings.map(warning => <li key={warning}>{warning}</li>)}</ul> : null}
             </div>
@@ -145,11 +150,15 @@ function ClipWorkspace({ result, active, openRequest, api, authHeaders, onRefres
           </div>
           {/* Keyed by clip: filters, selections and review drafts on screen belong to one clip. */}
           <div className="analysis__body" key={result.run_id}>
-            <TabPanel id="summary" idBase="clip" active={tab === "summary"}><SummaryTab {...tabProps} reviewUnsaved={reviewUnsaved} /></TabPanel>
-            <TabPanel id="possession" idBase="clip" active={tab === "possession"}><PossessionTab {...tabProps} api={api} authHeaders={authHeaders} onRefreshResult={onRefreshResult} /></TabPanel>
-            <TabPanel id="ball" idBase="clip" active={tab === "ball"}><BallTab {...tabProps} /></TabPanel>
-            <TabPanel id="shape" idBase="clip" active={tab === "shape"}><ShapeTab {...tabProps} media={media} /></TabPanel>
-            <TabPanel id="players" idBase="clip" active={tab === "players"}><PlayersTab {...tabProps} api={api} authHeaders={authHeaders} /></TabPanel>
+            {reviewOnly && <p className="note note--boxed">This video was uploaded for tagging by hand. No detection or tracking was run on it, so there are no model estimates: every figure comes from events you record and approve.</p>}
+            {!reviewOnly && <>
+              <TabPanel id="summary" idBase="clip" active={tab === "summary"}><SummaryTab {...tabProps} reviewUnsaved={reviewUnsaved} /></TabPanel>
+              <TabPanel id="possession" idBase="clip" active={tab === "possession"}><PossessionTab {...tabProps} api={api} authHeaders={authHeaders} onRefreshResult={onRefreshResult} /></TabPanel>
+              <TabPanel id="ball" idBase="clip" active={tab === "ball"}><BallTab {...tabProps} /></TabPanel>
+              <TabPanel id="shape" idBase="clip" active={tab === "shape"}><ShapeTab {...tabProps} media={media} /></TabPanel>
+              <TabPanel id="players" idBase="clip" active={tab === "players"}><PlayersTab {...tabProps} api={api} authHeaders={authHeaders} /></TabPanel>
+            </>}
+            <TabPanel id="analytics" idBase="clip" active={tab === "analytics"}><AnalyticsTab {...tabProps} reviewUnsaved={reviewUnsaved} /></TabPanel>
             {/* Review stays mounted from the start: it loads the saved review that Summary and the timeline read. */}
             <TabPanel id="review" idBase="clip" active={tab === "review"}>
               <ReviewTab {...tabProps} api={api} authHeaders={authHeaders} reviewUnsaved={reviewUnsaved} onSaved={setSavedReview} onUnsaved={setReviewUnsaved} />

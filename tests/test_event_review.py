@@ -34,7 +34,145 @@ def test_only_approved_records_count_unknown_outcomes_and_denominators_stay_expl
     with pytest.raises(ReviewConflict):save_review(path,MANIFEST,body)
 
 
+def test_outcome_rates_use_known_outcomes_and_turnovers_and_player_outcomes_are_counted(tmp_path):
+    body=payload()
+    body['events']=[event('p1'),event('p2',outcome='incomplete'),event('p3',outcome='unknown'),
+        event('s1','shot','goal'),event('s2','shot','on_target'),event('s3','shot','off_target'),event('s4','shot','blocked'),event('s5','shot','unknown'),
+        event('t1','tackle','won'),event('t2','tackle','lost'),event('t3','tackle','unknown'),
+        event('d1','dribble','successful'),event('d2','dribble','unsuccessful'),event('d3','dribble','unsuccessful'),
+        event('u1','duel','won'),event('i1','interception','successful'),
+        event('a1','tackle','won',team='away'),event('draft','duel','lost',status='draft')]
+    summary=save_review(tmp_path/'review.json',MANIFEST,body)['summary']
+    home=summary['teams']['home']
+    assert summary['summary_version']==2 and {'scope','rates','shots','turnovers'}<=set(summary['definitions'])
+    assert home['shots']==dict(recorded=5,on_target=2,goals=1,off_target=1,blocked=1,known_outcomes=4,on_target_pct=50,conversion_pct=25)
+    assert home['tackles']==dict(recorded=3,won=1,lost=1,known_outcomes=2,win_pct=50)
+    assert home['dribbles']==dict(recorded=3,successful=1,unsuccessful=2,known_outcomes=3,success_pct=33.33)
+    # The draft lost duel is not counted, and one decided duel gives a rate of 100, not a guess.
+    assert home['duels']==dict(recorded=1,won=1,lost=0,known_outcomes=1,win_pct=100)
+    assert home['turnovers']==dict(conceded=3,incomplete_passes=1,unsuccessful_dribbles=2,won=2,tackles_won=1)
+    away=summary['teams']['away']
+    assert away['tackles']['win_pct']==100 and away['shots']['conversion_pct'] is None and away['dribbles']['success_pct'] is None
+    player=next(p for p in summary['players'] if p['team']=='home')
+    assert player['event_count']==16 and player['outcomes']['shot']==dict(goal=1,on_target=1,off_target=1,blocked=1,unknown=1)
+    assert player['outcomes']['pass']==dict(completed=1,incomplete=1,unknown=1)
+
+
+def located(identity,start,end,team='home',period=1,**extra):
+    return dict(event(identity,team=team),period=period,location=dict(x=start[0],y=start[1]),end_location=dict(x=end[0],y=end[1]),**extra)
+
+
+def test_locations_periods_and_progressive_passes_follow_the_recorded_direction_of_play(tmp_path):
+    body=payload()
+    body['periods']={'1':dict(home_attacks='right',reference_video_seconds=10,reference_clock_seconds=600),'2':dict(home_attacks='left')}
+    body['events']=[
+        located('own-half-long',(10,34),(45,34)),            # 35 m closer, both ends in the own half
+        located('own-half-short',(10,34),(35,34)),           # 25 m closer: not enough in the own half
+        located('across-halfway',(45,34),(62,34)),           # 17 m closer across halfway
+        located('final-third',(80,34),(92,34),receiver='Player 9',body_part='foot',situation='free_kick'),
+        located('backwards',(80,34),(60,34)),
+        located('second-half',(95,34),(60,34),period=2),      # home attacks left after the break: 35 m closer
+        located('away',(95,34),(60,34),team='away'),          # away attacks left in the first half
+        dict(event('no-end'),location=dict(x=50,y=30)),
+        dict(event('shot','shot','goal'),location=dict(x=96,y=30),body_part='head',situation='corner')]
+    path=tmp_path/'review.json';saved=save_review(path,MANIFEST,body)
+    home,away=saved['summary']['teams']['home'],saved['summary']['teams']['away']
+    assert home['progression']==dict(shots_located=1,passes_located=6,passes_with_direction=6,progressive_passes=4)
+    assert away['progression']==dict(shots_located=0,passes_located=1,passes_with_direction=1,progressive_passes=1)
+    stored={e['id']:e for e in load_review(path,MANIFEST)['events']}
+    assert stored['final-third']['receiver']=='Player 9' and stored['final-third']['situation']=='free_kick'
+    assert stored['no-end']['end_location'] is None and stored['shot']['body_part']=='head' and stored['second-half']['period']==2
+    # Without a recorded direction of play nothing is called progressive.
+    body['revision']=1;body['periods']={}
+    unknown=save_review(path,MANIFEST,body)['summary']['teams']['home']['progression']
+    assert unknown==dict(shots_located=1,passes_located=6,passes_with_direction=0,progressive_passes=None)
+
+
+def test_review_saved_before_locations_existed_still_loads(tmp_path):
+    path=tmp_path/'review.json';saved=save_review(path,MANIFEST,dict(payload(),events=[event()]))
+    old=json.loads(path.read_text());old['schema_version']='event-review-1';del old['periods'];del old['summary']
+    for row in old['events']:
+        for key in ('period','location','end_location','body_part','situation','receiver'):del row[key]
+    path.write_text(json.dumps(old))
+    loaded=load_review(path,MANIFEST)
+    assert loaded['events'][0]['period']==1 and loaded['events'][0]['location'] is None and set(loaded['periods'])=={'1','2','3','4'}
+    assert loaded['summary']['teams']['home']['progression']['progressive_passes'] is None
+    assert save_review(path,MANIFEST,dict(payload(),revision=saved['revision'],events=[event()]))['revision']==2
+
+
+def lineup(identity,name,**extra):return dict(id=identity,name=name,**extra)
+
+
+def test_lineups_match_events_by_name_and_rates_per_90_need_reviewed_footage_that_covers_the_minutes(tmp_path):
+    from workers.video.event_review import approved_export
+    half=dict(MANIFEST,metadata=dict(duration_seconds=45*60,sha256='source-hash'))
+    body=payload()
+    body['lineups']=dict(home=[lineup('h7','Player 7',number='7',position='MF',started=True,minutes=45),
+                               lineup('h9','Sub Nine',number='9',minutes=5),lineup('h1','Keeper',started=True,minutes=45)],away=[])
+    body['events']=[event('a'),event('b',at=60),dict(event('c','shot','goal',at=90),player='  player 7 '),
+                    dict(event('d',at=100),player='Sub Nine'),dict(event('e',at=120),player='Unlisted')]
+    path=tmp_path/'review.json'
+    partly=save_review(path,half,body)['summary']
+    assert partly['per_90']['supported'] is False and 'marked as reviewed' in partly['per_90']['reason']
+    assert all(p['per_90'] is None for p in partly['players'])
+    body['revision']=1;body['coverage']=[[0,45*60]]
+    saved=save_review(path,half,body);summary=saved['summary']
+    rows={p['player']:p for p in summary['players']}
+    assert summary['per_90']==dict(supported=True,reason=None,min_minutes=10)
+    assert summary['lineups']==dict(home=3,away=0,unlisted_event_players=1)
+    # Two passes in 45 minutes is four per 90. The same name typed with other spacing and case is the same player.
+    assert rows['Player 7']['per_90']=={'pass':4.0,'shot':2.0} and rows['Player 7']['number']=='7' and rows['Player 7']['minutes']==45
+    assert rows['Player 7']['event_count']==3 and 'player 7' not in rows
+    assert rows['Sub Nine']['per_90'] is None and rows['Sub Nine']['minutes']==5   # under ten minutes
+    assert rows['Unlisted']['listed'] is False and rows['Unlisted']['per_90'] is None
+    assert rows['Keeper']['event_count']==0 and rows['Keeper']['listed'] is True
+    exported=approved_export(saved,half)
+    assert exported['teams'][0]['players'][0]==dict(player_id='h7',name='Player 7',shirt_number='7',position='MF',started=True,minutes_played=45)
+    assert [e['player_id'] for e in exported['events']]==['h7','h7','h7','h9',None]
+    # The same minutes typed against a 30-second clip give no rate.
+    clip=save_review(tmp_path/'clip.json',MANIFEST,dict(body,revision=0,coverage=[[0,30]],events=[event()]))['summary']
+    assert clip['per_90']['supported'] is False and 'minutes long' in clip['per_90']['reason']
+
+
+@pytest.mark.parametrize('lineups',[dict(home=[lineup('a','Same'),lineup('b','same ')]),dict(home=[lineup('a','A'),lineup('a','B')]),
+    dict(home=[lineup('a','A',number='123')]),dict(home=[lineup('a','A',minutes=200)]),dict(home=[lineup('a','')]),
+    dict(home=[lineup('a','A',started='yes')]),dict(reserves=[]),dict(home=[lineup(str(i),f'P{i}') for i in range(41)])])
+def test_invalid_lineups_do_not_persist(tmp_path,lineups):
+    path=tmp_path/'review.json'
+    with pytest.raises(ValueError):save_review(path,MANIFEST,dict(payload(),lineups=lineups))
+    assert not path.exists()
+
+
+def test_approved_export_is_versioned_and_leaves_out_drafts(tmp_path):
+    from workers.video.event_review import approved_export
+    body=payload()
+    body['periods']={'1':dict(home_attacks='left',reference_video_seconds=10,reference_clock_seconds=600)}
+    body['events']=[located('p1',(80,10),(60,20)),dict(event('draft','shot','goal',status='draft'),location=dict(x=5,y=34)),
+                    dict(event('late','duel','won',at=20))]
+    body['possession_intervals']=[dict(id='pos1',start_seconds=0,end_seconds=5,team='home',review_status='approved'),
+                                  dict(id='pos2',start_seconds=5,end_seconds=8,team='away',review_status='draft')]
+    out=approved_export(save_review(tmp_path/'review.json',MANIFEST,body),MANIFEST)
+    assert (out['schema'],out['schema_version'])==('laas.approved-events','1.0.0') and out['review']['revision']==1
+    assert [e['event_id'] for e in out['events']]==['p1','late'] and [r['interval_id'] for r in out['possession_intervals']]==['pos1']
+    first=out['events'][0]
+    assert first['match_clock_seconds']==595 and out['events'][1]['match_clock_seconds']==610
+    assert first['location']==dict(x=80,y=10) and first['location_attacking']==dict(x=25,y=58) and first['end_location_attacking']==dict(x=45,y=48)
+    assert first['review']==dict(status='approved',source='human_annotation') and out['coordinate_system']['pitch_length']==105
+    assert out['periods']==[dict(period_id=1,home_attacks='left',reference_video_seconds=10,reference_clock_seconds=600)]
+    assert out['summary']['approved_events']==2 and out['source']['sha256']=='source-hash'
+
+
 @pytest.mark.parametrize('change',[lambda p:p.update(events=[event(at=31)]),
+    lambda p:p.update(events=[dict(event(),location=dict(x=106,y=10))]),
+    lambda p:p.update(events=[dict(event(),location=dict(x=10))]),
+    lambda p:p.update(events=[dict(event(),period=5)]),
+    lambda p:p.update(events=[dict(event(),body_part='knee')]),
+    lambda p:p.update(events=[dict(event(kind='tackle',outcome='won'),end_location=dict(x=10,y=10))]),
+    lambda p:p.update(events=[dict(event(kind='shot',outcome='goal'),receiver='Player 9')]),
+    lambda p:p.update(events=[dict(event(kind='duel',outcome='won'),situation='corner')]),
+    lambda p:p.update(periods={'1':dict(home_attacks='up')}),
+    lambda p:p.update(periods={'1':dict(reference_video_seconds=5)}),
+    lambda p:p.update(periods={'5':dict(home_attacks='left')}),
     lambda p:p.update(events=[event(at=float('nan'))]),
     lambda p:p.update(events=[event(),event()]),
     lambda p:p.update(events=[event(kind='goal',outcome='goal')]),
@@ -61,6 +199,32 @@ def test_private_review_api_persists_and_rejects_stale_revision_without_gpu(tmp_
     assert client.post(route,headers=headers,json=body).status_code==200
     assert client.post(route,headers=headers,json=body).status_code==409
     assert client.get(route,headers=headers).json()['summary']['approved_events']==1
+    assert client.get(route+'/approved-events').status_code==401
+    exported=client.get(route+'/approved-events',headers=headers).json()
+    assert exported['schema_version']=='1.0.0' and [e['event_id'] for e in exported['events']]==['pass-1']
     body['revision']=1;body['events']=[event(at=31)]
     assert client.post(route,headers=headers,json=body).status_code==422
     assert client.get(route,headers=headers).json()['revision']==1
+
+
+def test_pass_network_counts_named_passer_and_receiver_and_places_players_by_their_located_passes(tmp_path):
+    def passed(identity, passer, receiver, outcome='completed', start=None, end=None, team='home'):
+        row = dict(event(identity, outcome=outcome, team=team), player=passer, receiver=receiver)
+        if start: row.update(location=dict(x=start[0], y=start[1]), end_location=dict(x=end[0], y=end[1]))
+        return row
+    body = payload()
+    body['periods'] = {'1': dict(home_attacks='left')}
+    body['lineups'] = dict(home=[lineup('h8', 'Ada Obi', number='8')], away=[])
+    body['events'] = [passed('a', 'Ada Obi', 'Bo', start=(80, 20), end=(60, 30)), passed('b', 'ada obi', 'Bo', start=(70, 20), end=(50, 30)),
+                      passed('c', 'Ada Obi', 'Bo', 'incomplete'), passed('d', 'Bo', 'Ada Obi'), passed('e', 'Bo', 'Bo'),
+                      dict(event('f'), player='Ada Obi'), passed('g', 'Cy', 'Di', team='away')]
+    summary = save_review(tmp_path / 'review.json', MANIFEST, body)['summary']
+    home = summary['pass_networks']['home']
+    assert (home['passes'], home['completed']) == (4, 3)   # a pass to oneself and a pass with no receiver are left out
+    assert home['links'] == [dict(source='Ada Obi', target='Bo', recorded=3, completed=2), dict(source='Bo', target='Ada Obi', recorded=1, completed=1)]
+    nodes = {node['player']: node for node in home['nodes']}
+    # Home attack to the left, so points are turned: (80, 20) becomes (25, 48). Ada's two located starts average (30, 48).
+    assert nodes['Ada Obi'] == dict(player='Ada Obi', lineup_id='h8', number='8', passes_made=3, passes_received=1, located_touches=2, location=dict(x=30.0, y=48.0))
+    assert nodes['Bo']['location'] == dict(x=50.0, y=38.0) and nodes['Bo']['passes_received'] == 2 and nodes['Bo']['lineup_id'] is None
+    assert summary['pass_networks']['away']['nodes'][0]['location'] is None   # no located pass
+    assert empty_review(MANIFEST)['summary']['pass_networks'] == dict(home=None, away=None)

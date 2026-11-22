@@ -15,7 +15,7 @@ import tempfile
 
 from workers.video.event_review import ReviewConflict, text
 
-VERSION = "player-labels-1"
+VERSION = "player-labels-2"  # 2 added lineup_id and team: a named player can point at a line-up entry
 MAX_PLAYERS = 60
 MAX_TRACKS_PER_PLAYER = 40
 MAX_SHARED_FRAMES = 2  # a tracker can briefly hold two boxes on one person where identities hand over
@@ -41,6 +41,9 @@ def load_labels(path, manifest):
         state = json.loads(path.read_text(encoding="utf-8"))
         if state.get("run_id") != run_id or state.get("source_sha256") != digest:
             raise ValueError("Player names source mismatch")
+        for player in state.get("players", []):  # names saved before line-ups existed point at none
+            player.setdefault("lineup_id", None)
+            player.setdefault("team", None)
         return state
     return dict(schema_version=VERSION, run_id=run_id, source_sha256=digest, revision=0, players=[], source="human_entry", overlap_checked=None)
 
@@ -78,7 +81,10 @@ def _frames_by_track(tracking_path, wanted):
     return frames
 
 
-def save_labels(path, manifest, payload, tracking_path=None):
+def save_labels(path, manifest, payload, tracking_path=None, lineups=None):
+    """`lineups` is the line-up saved under Review. A player may point at one of its entries, whose name and number are then used."""
+    from workers.video.video_roster import lineup_index
+    listed = lineup_index(lineups)
     current = load_labels(path, manifest)
     if type(payload.get("revision")) is not int or payload["revision"] != current["revision"]:
         raise ReviewConflict("Player names changed. Reload before saving; your edits are retained.")
@@ -92,12 +98,22 @@ def save_labels(path, manifest, payload, tracking_path=None):
     raw = payload.get("players")
     if not isinstance(raw, list) or len(raw) > MAX_PLAYERS:
         raise ValueError("Invalid players")
-    known, used, players = known_tracks(manifest), set(), []
+    known, used, players, linked = known_tracks(manifest), set(), [], set()
     for index, row in enumerate(raw):
         if not isinstance(row, dict):
             raise ValueError("Invalid player")
-        name = text(row.get("name"), "player name", 80)
-        number = row.get("number")
+        lineup_id, team = row.get("lineup_id"), None
+        if lineup_id is not None:
+            if not isinstance(lineup_id, str) or lineup_id not in listed:
+                raise ValueError("That player is not in the line-up saved under Review. Save the line-up first.")
+            if lineup_id in linked:
+                raise ValueError(f"{listed[lineup_id][1]['name']} is chosen for two named players. Put the tracked identities under one.")
+            linked.add(lineup_id)
+            team, entry = listed[lineup_id]
+            name, number = entry["name"], entry["number"]  # the line-up is the list of record
+        else:
+            name = text(row.get("name"), "player name", 80)
+            number = row.get("number")
         if number is not None and (not isinstance(number, str) or not re.fullmatch(r"\d{1,2}", number)):
             raise ValueError("A shirt number is one or two digits, or left empty")
         tracks = row.get("tracks")
@@ -109,8 +125,8 @@ def save_labels(path, manifest, payload, tracking_path=None):
             raise ValueError("Tracked identity is not present in this source run")
         kits = {known[t] for t in tracks if known[t]}
         used |= set(tracks)
-        players.append(dict(id=f"P{index + 1}", name=name, number=number, tracks=sorted(tracks), kits=sorted(kits)))
-    if len({(p["name"].casefold(), p["number"]) for p in players}) != len(players):
+        players.append(dict(id=f"P{index + 1}", name=name, number=number, tracks=sorted(tracks), kits=sorted(kits), lineup_id=lineup_id, team=team))
+    if len({(p["name"].casefold(), p["number"], p["team"]) for p in players}) != len(players):
         raise ValueError("Two players have the same name and number. Put their tracked identities under one player.")
     frames = _frames_by_track(tracking_path, used)
     if frames is not None:

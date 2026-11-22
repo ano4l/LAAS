@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { ArrowRight, Play, RefreshCw, Search, Upload } from "lucide-react";
 import type { LibraryRun } from "./main";
-import { isModelRun, matchesClip, shortDate } from "./ClipSwitcher";
+import { isModelRun, isReviewOnly, matchesClip, shortDate } from "./ClipSwitcher";
 import { clock, num, pct } from "./format";
 
 type Props = {
@@ -15,6 +15,8 @@ type Props = {
   onOpen: (runId: string) => void;
   onSample: () => void;
   onUpload: () => void;
+  /** Stores a video for tagging by hand with no analysis. Absent when the server does not offer it. */
+  onUploadReview?: () => void;
   uploadDisabled: boolean;
   uploadTitle: string;
   /** Starts a new synthetic interface demo. Absent when the workspace requires an access key. */
@@ -36,7 +38,7 @@ function cardStats(run: LibraryRun) {
   ].filter(Boolean) as { label: string; value: string; title: string }[];
 }
 
-export function Library({ runs, currentRunId, loading, error, showSynthetic, onShowSynthetic, onRefresh, onOpen, onSample, onUpload, uploadDisabled, uploadTitle, onDemo, busy, blockers }: Props) {
+export function Library({ runs, currentRunId, loading, error, showSynthetic, onShowSynthetic, onRefresh, onOpen, onSample, onUpload, onUploadReview, uploadDisabled, uploadTitle, onDemo, busy, blockers }: Props) {
   const [query, setQuery] = useState("");
   const real = useMemo(() => runs.filter(isModelRun), [runs]);
   const synthetic = useMemo(() => runs.filter(run => !isModelRun(run)), [runs]);
@@ -86,10 +88,12 @@ export function Library({ runs, currentRunId, loading, error, showSynthetic, onS
             <div>
               <h2>Add a match clip</h2>
               <p>Hosted test clips: up to 2 minutes / 250 MiB. Target: a 45-minute match half.</p>
+              {onUploadReview && <p>To tag a longer video by hand, such as a full half, upload it without analysis. Nothing is detected in it, so the clip limit does not apply.</p>}
               {blockers?.length ? <p role="status">{blockers.join(" ")}</p> : null}
             </div>
             <div className="uploadtile__actions">
               <button type="button" className="btn btn--primary" onClick={onUpload} disabled={uploadDisabled} title={uploadTitle}><Upload size={16} aria-hidden="true" /> Upload video</button>
+              {onUploadReview && <button type="button" className="btn btn--secondary" onClick={onUploadReview} disabled={uploadDisabled} title="Stores the video so you can record events against it. No detection or tracking is run."><Upload size={16} aria-hidden="true" /> Upload to tag by hand</button>}
               <button type="button" className="btn btn--secondary" onClick={onSample} disabled={busy}>Open sample · 30 s</button>
             </div>
           </div>
@@ -105,7 +109,7 @@ export function Library({ runs, currentRunId, loading, error, showSynthetic, onS
             <li key={run.run_id}>
               <button type="button" className="clipcard" aria-current={current ? "true" : undefined} onClick={() => onOpen(run.run_id)}>
                 <span className="clipcard__top">
-                  <span className={`tag ${model ? "" : "tag--synthetic"}`}>{model ? "Model analysis" : "Synthetic demo"}</span>
+                  <span className={`tag ${model ? "" : "tag--synthetic"}`}>{isReviewOnly(run) ? "Tagging only · no analysis" : model ? "Model analysis" : "Synthetic demo"}</span>
                   <span className="clipcard__date">{shortDate(run.created_at)}</span>
                 </span>
                 <span className="clipcard__name">{run.metadata.filename}</span>
