@@ -10,11 +10,19 @@ PERSON_CLASSES={'person','player','goalkeeper','referee'}
 
 class FootballDetector:
     def __init__(self,weights:Path,*,device,image_size,ball_confidence,object_confidence,
-                 sample_fps,ball_weights=None,tile_size=0,ball_rescue_weights=None):
+                 sample_fps,ball_weights=None,tile_size=0,ball_rescue_weights=None,person_weights=None):
         from ultralytics import YOLO
         self.model=YOLO(str(weights));self.names=self.model.names
         self.ball_model=YOLO(str(ball_weights)) if ball_weights else None
         self.rescue_model=YOLO(str(ball_rescue_weights)) if ball_rescue_weights else None
+        # A general person detector finds players the football weights miss or box in pieces on closer views
+        # (docs/testing/DETECTOR_2026-11-22.md). The football weights still supply the ball and say who is a
+        # goalkeeper or a referee. The same file as the secondary ball model is loaded once.
+        same=bool(person_weights and ball_rescue_weights and Path(person_weights).resolve()==Path(ball_rescue_weights).resolve())
+        self.person_model=(self.rescue_model if same else YOLO(str(person_weights))) if person_weights else None
+        self.general_person_ids=[k for k,n in self.person_model.names.items() if str(n).lower()=='person'] if self.person_model else []
+        if self.person_model and not self.general_person_ids:
+            raise ValueError('The person detector has no person class')
         self.rescue_ids=[k for k,n in self.rescue_model.names.items() if str(n).lower() in BALL_CLASSES] if self.rescue_model else []
         if self.rescue_model and not self.rescue_ids:
             raise ValueError('Secondary ball model has no supported ball class')
@@ -33,6 +41,10 @@ class FootballDetector:
         self.quality_counts=self.refiner.quality_counts
         self.tracking_config=self.refiner.tracking_config
         self.quality_counts.update(ball_rescue_frames=0,ball_rescue_candidates=0,ball_rescue_roi_frames=0)
+        if self.person_model:self.quality_counts.update(general_people=0,roles_from_football_model=0)
+        self.default_role=next((role for role in ('player','person') if role in {str(v).lower() for v in self.names.values()}),None)
+        if self.person_model and not self.default_role:
+            raise ValueError('The football detector needs a player or person class to label people from the person detector')
 
     def predict(self,model,frame,classes,confidence):
         return model.predict(frame,classes=classes,imgsz=self.image_size,conf=confidence,
@@ -44,6 +56,13 @@ class FootballDetector:
         result=self.predict(self.model,frame,classes,min(.1,self.ball_confidence,self.object_confidence))
         rows=[self._row(box,result.names,None,'object_detector') for box in result.boxes
               if int(box.cls.item()) in self.person_ids]
+        if self.person_model:
+            from workers.video.people_boxes import adopt_roles
+            general=self.predict(self.person_model,frame,self.general_person_ids,min(.1,self.object_confidence))
+            people=adopt_roles([self._row(box,general.names,None,'person_detector') for box in general.boxes],rows,self.default_role)
+            self.quality_counts['general_people']+=len(people)
+            self.quality_counts['roles_from_football_model']+=sum(row['object_type']!=self.default_role for row in people)
+            rows=people
         if self.ball_model:
             ids=[k for k,n in self.ball_model.names.items() if str(n).lower() in BALL_CLASSES]
             result=self.predict(self.ball_model,frame,ids,self.ball_confidence)

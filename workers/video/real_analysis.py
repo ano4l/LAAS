@@ -14,7 +14,7 @@ from uuid import uuid4
 
 import cv2
 
-from workers.video.yolo_adapter import model_path, pitch_model_path, yolo_capabilities
+from workers.video.yolo_adapter import model_path, person_model_path, pitch_model_path, yolo_capabilities
 from workers.video.detector import FootballDetector
 from workers.video.accuracy import analysis_settings
 from workers.video import insights as video_insights, measurements as video_measurements
@@ -64,10 +64,12 @@ def run_real_analysis(input_video: Path, output_root: Path, progress=None) -> di
     object_confidence = float(os.getenv("OBJECT_CONFIDENCE", "0.45"))
     if not 0 < ball_confidence <= 1 or not 0 < object_confidence <= 1:
         raise ValueError("Detection confidence thresholds must be greater than 0 and at most 1.")
+    person_weights = person_model_path(ROOT)
     detector = FootballDetector(model_path(ROOT), device=device, image_size=image_size,
                                 ball_confidence=ball_confidence, object_confidence=object_confidence,
                                 sample_fps=metadata["fps"] / stride, ball_weights=ball_weights,
-                                tile_size=options["tile_size"],ball_rescue_weights=rescue_weights)
+                                tile_size=options["tile_size"],ball_rescue_weights=rescue_weights,
+                                person_weights=person_weights)
     pitch_weights = pitch_model_path(ROOT)
     pitch_model = None
     if pitch_weights:
@@ -235,6 +237,11 @@ def run_real_analysis(input_video: Path, output_root: Path, progress=None) -> di
         summary["pitch_calibration"] = ({key: pitch_document[key] for key in ("schema_version", "method", "model", "model_sha256", "frame_stride", "assumed_pitch", "summary")}
                                         if pitch_document else dict(status="not_run", reason="No pitch landmark model is configured."))
         summary["linked_tracks"] = linking["identities"]
+        if person_weights:
+            with person_weights.open('rb') as stream:
+                summary['person_model_sha256']=hashlib.file_digest(stream,'sha256').hexdigest()
+            summary['person_model']=person_weights.name
+            summary['person_detection']='People come from a general person detector; the football weights supply the ball and the goalkeeper and referee labels.'
         if rescue_weights:
             with rescue_weights.open('rb') as stream:
                 summary['secondary_ball_model_sha256']=hashlib.file_digest(stream,'sha256').hexdigest()
