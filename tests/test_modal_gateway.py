@@ -56,7 +56,7 @@ def test_selected_insights_backfill_is_persistent_signed_and_never_starts_infere
     assert response.status_code==200
     out=response.json()
     assert out['metrics']['video_insights']['control']['unknown_seconds']==1
-    assert json.loads(record.read_text())['result']['metrics']['video_insights']['schema_version']=='video-insights-8'
+    assert json.loads(record.read_text())['result']['metrics']['video_insights']['schema_version']=='video-insights-10'
     metrics=client.get(out['files']['metrics_json']).json()
     assert metrics['video_measurements']=={'existing':True}
     assert metrics['video_insights']['analyzed_frames']==10

@@ -113,3 +113,24 @@ def test_secondary_ball_inference_is_sampled_and_preserves_its_provenance(monkey
     assert primary_confidences==[.1,.1]  # Raising the ball threshold cannot disable weak-person recovery.
     for _ in range(23):detector.detect(frame)
     assert calls.count(True)==2  # At 25fps the global fallback stays at or below 2fps.
+
+
+def test_a_green_shirt_on_grass_is_still_a_shirt_colour():
+    # A lime shirt on darker grass. Dropping every green pixel left nothing of the shirt; only grass-coloured pixels are dropped now.
+    grass, lime, white = (40, 120, 50), (90, 240, 170), (235, 235, 235)   # BGR
+    frame = np.zeros((240, 320, 3), dtype=np.uint8)
+    frame[:] = grass
+    model = JerseyTeams()
+    def shirt(x, colour):
+        frame[60:200, x:x + 40] = colour
+        return [x, 60, x + 40, 200]
+    green_box, white_box = shirt(60, lime), shirt(200, white)
+    green_feature, white_feature = model.feature(frame, green_box), model.feature(frame, white_box)
+    assert green_feature is not None and white_feature is not None
+    assert np.linalg.norm(green_feature - white_feature) > 25          # far enough apart to be two kit groups
+    # A box holding nothing but grass has no shirt in it.
+    assert model.feature(frame, [130, 60, 170, 200]) is None
+    # With no grass beside the player to compare against, green pixels are dropped as before.
+    indoor = np.full((240, 320, 3), 128, dtype=np.uint8)
+    indoor[60:200, 60:100] = lime
+    assert model.grass_colour(indoor, [60, 60, 100, 200]) is None and model.feature(indoor, [60, 60, 100, 200]) is None

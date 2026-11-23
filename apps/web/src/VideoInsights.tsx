@@ -11,7 +11,15 @@ type PathPoint = { timestamp_seconds: number; x_pct: number; y_pct: number; scen
 type ShapeWindow = { start_seconds: number; end_seconds: number; supported_frames: number; supported_seconds: number; mean_visible_players: number; centroid_x_pct: number | null; centroid_y_pct: number | null; width_pct: number | null; depth_pct: number | null };
 type Kit = { kit: string; scene_id: number; player_observations: number; visible_frames: number; visible_seconds: number; image_thirds_pct: (number | null)[]; image_occupancy_grid: number[][]; shape_timeline: ShapeWindow[] };
 type Spell = { id: string; scene_id: number; kit: string | null; track_id: string; start_seconds: number; end_seconds: number; observed_seconds: number; observed_frames: number; mean_ball_confidence: number; mean_foot_distance_heights: number; image_start: { x_pct: number; y_pct: number }; image_end: { x_pct: number; y_pct: number }; review_status: string };
-type Candidate = { id: string; type: string; timestamp_seconds: number; start_seconds: number; end_seconds: number; evidence_start_seconds: number; evidence_end_seconds: number; scene_id: number; from_track: string; to_track: string; from_kit: string; to_kit: string; image_separation_px: number; supported_control_seconds: number; observed_bridge_frames: number; review_status: string; evidence: string; from_team?: string; to_team?: string; ball_support_pct?: number | null; missing_ball_seconds?: number; max_missing_ball_gap_seconds?: number; receiver_support?: string; quality_flags?: string[]; evidence_level?: string; possession_included?: boolean };
+export type Candidate = { id: string; type: string; timestamp_seconds: number; start_seconds: number; end_seconds: number; evidence_start_seconds: number; evidence_end_seconds: number; scene_id: number; from_track: string | null; to_track: string | null; from_kit: string | null; to_kit: string | null; image_separation_px?: number; supported_control_seconds?: number; observed_bridge_frames?: number; review_status: string; evidence: string; from_team?: string; to_team?: string; ball_support_pct?: number | null; missing_ball_seconds?: number; max_missing_ball_gap_seconds?: number; receiver_support?: string; quality_flags?: string[]; evidence_level?: string; possession_included?: boolean;
+  /** Set on rule-based shots, tackles, duels and dribbles, and names the Review event type a person would record. */
+  suggested_review_type?: string; basis?: string; ball_speed_heights_per_second?: number; goalkeeper_track?: string; estimated_distance_m?: number;
+  players_closest_heights?: number; ball_travel_heights?: number; contested_seconds?: number; next_touch_track?: string | null; next_touch_team?: string | null;
+  opponent_closest_heights?: number; carried_seconds?: number;
+  /** Set on passes estimated on the pitch map: where it started and ended in metres, and whether it reached a team-mate. */
+  start_m?: { x: number; y: number }; end_m?: { x: number; y: number }; length_m?: number; seconds?: number; fastest_m_s?: number; outcome?: string; suggested_outcome?: string };
+/** What the Review form is started with when a person chooses to draft a candidate. The outcome and places are the model's suggestion, for the person to correct. */
+export type CandidateDraft = { timestamp_seconds: number; type: string; notes: string; outcome?: string; location?: { x: number; y: number } | null; end_location?: { x: number; y: number } | null };
 export type VideoInsights = {
   schema_version: string; source: string; review_status: string; coordinate_system: string;
   source_video?: { filename?: string; sha256?: string; width?: number; height?: number; fps?: number; frame_count?: number };
@@ -31,7 +39,34 @@ export type VideoInsights = {
 };
 
 const THIRDS = ["Left third of the image", "Centre third of the image", "Right third of the image"];
-export const candidateName = (type: string) => type === "possible_pass" ? "Possible pass" : type === "possible_turnover" ? "Possible turnover" : sentence(type);
+const CANDIDATE_NAMES: Record<string, [string, string]> = {
+  possible_pass: ["Possible pass", "Possible passes"], possible_turnover: ["Possible turnover", "Possible turnovers"], possible_shot: ["Possible shot", "Possible shots"],
+  possible_tackle: ["Possible tackle", "Possible tackles"], possible_duel: ["Possible duel", "Possible duels"], possible_dribble: ["Possible dribble", "Possible dribbles"],
+};
+export const candidateName = (type: string) => CANDIDATE_NAMES[type]?.[0] ?? sentence(type);
+/** Who did what, in words that fit the kind of event. `name` turns a track into what the reader should see. */
+export function candidatePlayers(event: Candidate, name: (track: string) => string = track => `track ${track}`) {
+  const a = event.from_track ? name(event.from_track) : "an untracked player", b = event.to_track ? name(event.to_track) : null;
+  switch (event.type) {
+    case "possible_shot": return b ? `${a} · next seen with ${b}` : a;
+    case "possible_tackle": return `${b ?? "an untracked player"} took the ball from ${a}`;
+    case "possible_duel": return `${a} against ${b ?? "an untracked player"}`;
+    case "possible_dribble": return `${a} past ${b ?? "an untracked player"}`;
+    default: return `${a} → ${b ?? "an untracked player"}`;
+  }
+}
+function candidateDetail(event: Candidate) {
+  switch (event.type) {
+    case "possible_shot": return `Ball left at about ${num(event.ball_speed_heights_per_second)} player heights a second · ${event.basis === "towards_goalkeeper" ? `heading at the goalkeeper (track ${event.goalkeeper_track})` : "heading at a goal on the estimated pitch map"}${event.estimated_distance_m != null ? ` · about ${num(event.estimated_distance_m, 0)} m out on the pitch map` : ""}`;
+    case "possible_tackle": return `Players ${num(event.players_closest_heights)} player heights apart at their closest · ball moved ${num(event.ball_travel_heights)} heights between them`;
+    case "possible_duel": return `Ball about equally close to both for ${secs(event.contested_seconds ?? 0, 2)} · ${event.next_touch_track ? `next controlled touch: track ${event.next_touch_track}` : "no controlled touch soon after"}`;
+    case "possible_dribble": return `Ball kept for ${secs(event.carried_seconds ?? 0, 2)} · opponent came within ${num(event.opponent_closest_heights)} player heights`;
+    case "possible_pass": case "possible_turnover":
+      return event.length_m == null ? null
+        : `About ${num(event.length_m, 0)} m on the pitch map${event.seconds != null ? ` in ${secs(event.seconds, 1)}` : ""}${event.outcome ? ` · ${event.outcome === "completed" ? "the next player with the ball was a team-mate" : "the next player with the ball was in the other kit group"}` : ""}`;
+    default: return null;
+  }
+}
 
 /** Insights JSON and CSV for this run. The export format is unchanged; only the buttons are restyled. */
 export function VideoInsightsDownloads({ insights, runId }: { insights: VideoInsights; runId: string }) {
@@ -67,7 +102,7 @@ export function VideoInsightsDownloads({ insights, runId }: { insights: VideoIns
     insights.ball.path.forEach(point => add("sampled_ball_path_point", { scene_id: point.scene_id, segment_id: point.segment_id, start_seconds: point.timestamp_seconds, x_pct: point.x_pct, y_pct: point.y_pct }));
     insights.kits.forEach(kit => kit.shape_timeline.forEach(window => add("kit_image_shape_window", { scene_id: kit.scene_id, kit: kit.kit, start_seconds: window.start_seconds, end_seconds: window.end_seconds, x_pct: window.centroid_x_pct, y_pct: window.centroid_y_pct, width_pct: window.width_pct, depth_pct: window.depth_pct, supported_seconds: window.supported_seconds, observed_frames: window.supported_frames })));
     insights.control.spells.forEach(spell => add("estimated_control_spell", { scene_id: spell.scene_id, kit: spell.kit, track_id: spell.track_id, start_seconds: spell.start_seconds, end_seconds: spell.end_seconds, supported_seconds: spell.observed_seconds, observed_frames: spell.observed_frames }));
-    insights.candidates.forEach(event => add("possible_event_candidate", { scene_id: event.scene_id, kit: `${event.from_kit} → ${event.to_kit}`, from_team: event.from_team ?? null, to_team: event.to_team ?? null, start_seconds: event.start_seconds, end_seconds: event.end_seconds, event_type: event.type, from_track: event.from_track, to_track: event.to_track, supported_seconds: event.supported_control_seconds, observed_frames: event.observed_bridge_frames, ball_support_pct: event.ball_support_pct ?? null, missing_ball_seconds: event.missing_ball_seconds ?? null, max_missing_ball_gap_seconds: event.max_missing_ball_gap_seconds ?? null, receiver_support: event.receiver_support ?? null, quality_flags: event.quality_flags?.join("; ") ?? null, evidence_level: event.evidence_level ?? null, possession_included: event.possession_included === undefined ? null : String(event.possession_included) }));
+    insights.candidates.forEach(event => add("possible_event_candidate", { scene_id: event.scene_id, kit: `${event.from_kit ?? "unknown"} → ${event.to_kit ?? "unknown"}`, from_team: event.from_team ?? null, to_team: event.to_team ?? null, start_seconds: event.start_seconds, end_seconds: event.end_seconds, event_type: event.type, from_track: event.from_track, to_track: event.to_track, supported_seconds: event.supported_control_seconds ?? null, observed_frames: event.observed_bridge_frames ?? null, ball_support_pct: event.ball_support_pct ?? null, missing_ball_seconds: event.missing_ball_seconds ?? null, max_missing_ball_gap_seconds: event.max_missing_ball_gap_seconds ?? null, receiver_support: event.receiver_support ?? null, quality_flags: event.quality_flags?.join("; ") ?? null, evidence_level: event.evidence_level ?? null, possession_included: event.possession_included === undefined ? null : String(event.possession_included) }));
     const cell = (value: string | number | null) => { const text = value == null ? "" : String(value); const safe = typeof value === "string" && /^(\s*[=+\-@]|[\t\r])/.test(text) ? `'${text}` : text; return `"${safe.replaceAll('"', '""')}"`; };
     const contents = format === "json" ? JSON.stringify({ run_id: runId, video_insights: insights }, null, 2) : [columns, ...rows].map(row => row.map(cell).join(",")).join("\r\n");
     const url = URL.createObjectURL(new Blob([contents], { type: format === "json" ? "application/json" : "text/csv;charset=utf-8" }));
@@ -361,36 +396,44 @@ export function ControlEstimates({ data }: { data: VideoInsights }) {
   );
 }
 
-/* ---------- To review: possible passes & turnovers ---------- */
+/* ---------- To review: possible events ---------- */
 
-export function CandidateQueue({ data }: { data: VideoInsights }) {
+export function CandidateQueue({ data, onDraft }: { data: VideoInsights; onDraft?: (draft: CandidateDraft) => void }) {
   const kits = useKits();
   const id = useId();
   const [type, setType] = useState("all");
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(0);
-  const matches = data.candidates.filter(event => (type === "all" || event.type === type) && `${event.from_track} ${event.to_track} ${event.from_kit} ${event.to_kit} ${event.evidence} ${kits.label(event.from_kit)} ${kits.label(event.to_kit)}`.toLowerCase().includes(search.trim().toLowerCase()));
+  const matches = data.candidates.filter(event => (type === "all" || event.type === type) && `${event.from_track} ${event.to_track} ${event.from_kit} ${event.to_kit} ${event.evidence} ${event.from_kit ? kits.label(event.from_kit) : ""} ${event.to_kit ? kits.label(event.to_kit) : ""} ${candidateName(event.type)}`.toLowerCase().includes(search.trim().toLowerCase()));
+  const types = Object.keys(CANDIDATE_NAMES).filter(key => data.candidates.some(event => event.type === key));
+  const ruleBased = data.candidates.some(event => event.evidence_level === "rule_based_review_only");
+  const draft = (event: Candidate) => onDraft?.({
+    timestamp_seconds: event.timestamp_seconds, type: event.suggested_review_type ?? "pass",
+    notes: `Started from the automatic candidate ${event.id} (${candidateName(event.type).toLowerCase()}): ${candidatePlayers(event)}${event.from_kit ? ` · ${kits.label(event.from_kit)}` : ""}${event.to_kit && event.to_kit !== event.from_kit ? ` and ${kits.label(event.to_kit)}` : ""}.${event.start_m ? " The outcome and the two places on the pitch are the model’s suggestion: check them against the footage." : ""}`,
+    outcome: (event.suggested_review_type ?? "pass") === "pass" ? event.suggested_outcome : undefined,
+    location: event.start_m ?? null, end_location: (event.suggested_review_type ?? "pass") === "pass" ? event.end_m ?? null : null,
+  });
   const pages = Math.max(1, Math.ceil(matches.length / 6));
   const current = Math.min(page, pages - 1);
 
   return (
     <Panel
-      title="To review: possible passes & turnovers"
-      subtitle="Prompts from observed changes of control, for a person to check. Nothing here is counted as a completed pass or approved automatically."
+      title="To review: possible events"
+      subtitle="Possible passes, turnovers, shots, tackles, duels and dribbles, for a person to check against the footage. Nothing here is counted or approved automatically."
       aside={<span className="chip chip--plain" title="Technical name: evidence queue · not approved events">{data.candidates.length} to review · not counted</span>}
     >
       <div className="toolbar">
         <Field label="Type" className="field--fixed">
           <select value={type} onChange={event => { setType(event.target.value); setPage(0); }}>
             <option value="all">All possible events</option>
-            <option value="possible_pass">Possible passes</option>
-            <option value="possible_turnover">Possible turnovers</option>
+            {types.map(key => <option key={key} value={key}>{CANDIDATE_NAMES[key][1]}</option>)}
           </select>
         </Field>
         <Field label="Find a possible event">
           <input type="search" value={search} onChange={event => { setSearch(event.target.value); setPage(0); }} placeholder="Track or kit group" />
         </Field>
       </div>
+      {ruleBased && <p className="note note--boxed">Shots, tackles, duels and dribbles come from simple rules over the tracked ball and players. They have not been checked against labelled events, they miss most real ones, and some will be wrong. Watch each one before recording it.</p>}
       {matches.length ? (
         <ul className="cards" aria-labelledby={id}>
           {matches.slice(current * 6, (current + 1) * 6).map(event => (
@@ -400,9 +443,12 @@ export function CandidateQueue({ data }: { data: VideoInsights }) {
                 <strong className="mono">{secs(event.timestamp_seconds, 2)}</strong>
               </header>
               {event.evidence_level === "partial_tracking_review_only" && <p className="note note--boxed">Partial tracking: a review-only proposal. Excluded from possession estimates.</p>}
-              <p><strong>Track {event.from_track} → {event.to_track}</strong> · <TeamName id={event.from_kit} /> → <TeamName id={event.to_kit} /></p>
-              <p className="note">{secs(event.supported_control_seconds, 2)} supported control at both ends · {event.observed_bridge_frames} observed bridge frames · scene {event.scene_id + 1}</p>
-              {event.from_team && <p className="note">Estimated group or team: {kits.label(event.from_team)} → {kits.label(event.to_team, "Unknown")}</p>}
+              <p><strong>{sentence(candidatePlayers(event))}</strong>{event.from_kit && <> · <TeamName id={event.from_kit} /></>}{event.to_kit && <> → <TeamName id={event.to_kit} /></>}</p>
+              {event.supported_control_seconds !== undefined
+                ? <p className="note">{secs(event.supported_control_seconds, 2)} supported control at both ends · {event.observed_bridge_frames} observed bridge frames · scene {event.scene_id + 1}</p>
+                : <p className="note">{candidateDetail(event)} · scene {event.scene_id + 1}</p>}
+              {event.supported_control_seconds !== undefined && event.length_m != null && <p className="note">{candidateDetail(event)}</p>}
+              {event.from_team && event.supported_control_seconds !== undefined && <p className="note">Estimated group or team: {kits.label(event.from_team)} → {kits.label(event.to_team, "Unknown")}</p>}
               {event.ball_support_pct !== undefined && (
                 <p className="note">
                   Ball seen for {pct(event.ball_support_pct)} of it · ball missing for {secs(event.missing_ball_seconds, 2)}
@@ -411,16 +457,19 @@ export function CandidateQueue({ data }: { data: VideoInsights }) {
               )}
               {Boolean(event.quality_flags?.length) && <p className="note">Review flags: {event.quality_flags!.map(words).join(" · ")}</p>}
               <p className="note">{event.evidence}</p>
-              <div><WatchButton at={event.evidence_start_seconds} label={`Review evidence ${range(event.evidence_start_seconds, event.evidence_end_seconds)}`} /></div>
+              <div className="row">
+                <WatchButton at={event.evidence_start_seconds} label={`Review evidence ${range(event.evidence_start_seconds, event.evidence_end_seconds)}`} />
+                {onDraft && event.suggested_review_type && <button type="button" className="btn btn--secondary btn--sm" title="Opens the Review form filled in with this time and event type. Nothing is saved or approved until you do it there." onClick={() => draft(event)}>Draft under Review</button>}
+              </div>
             </li>
           ))}
         </ul>
       ) : (
         <EmptyState title={data.candidates.length ? "No possible events match these filters" : "Nothing to review here"}>
-          {data.candidates.length ? "Try another type or search." : "No possible events have sufficient supporting evidence. Pass and turnover totals remain unknown; inspect the footage and add verified annotations under Review."}
+          {data.candidates.length ? "Try another type or search." : "No possible events have sufficient supporting evidence. That does not mean none happened: event totals remain unknown. Inspect the footage and add verified annotations under Review."}
         </EmptyState>
       )}
-      <span id={id} className="sr-only">Possible passes and turnovers to review</span>
+      <span id={id} className="sr-only">Possible events to review</span>
       <Pager page={current} pages={pages} count={matches.length} noun="possible events" onPage={setPage} />
     </Panel>
   );

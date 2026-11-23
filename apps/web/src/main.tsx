@@ -71,6 +71,7 @@ export type AnalysisResult = {
     detections_by_class: Record<string, number>;
     tracks: { track_id: string; object_type: string; observations: number; first_seen_ms: number; last_seen_ms: number }[];
     track_linking?: { tracks_before: number; identities_after: number; links_accepted: number };
+    off_pitch?: { status: string; tracks?: number; observations?: number };
     linked_tracks?: { linked_track_id: string; track_ids: string[]; object_type: string; team: string | null; observations: number; first_seen_ms: number; last_seen_ms: number }[];
   };
   metadata: { filename: string; fps: number; frame_count: number; duration_seconds: number; width: number; height: number; sha256?: string };
@@ -114,6 +115,7 @@ export type Capabilities = {
     fallback: { available: boolean; description: string };
     yolo: { blockers?: string[]; available: boolean; compute_provider?: "local" | "modal"; model_exists?: boolean; ultralytics_installed?: boolean; opencv_available?: boolean; model_path?: string };
   };
+  analysis?: { review_only_upload?: boolean };
 };
 
 /* ---------- API ---------- */
@@ -143,6 +145,7 @@ function App() {
   const [error, setError] = useState("");
   const [uploadPct, setUploadPct] = useState<number | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
+  const reviewFileRef = useRef<HTMLInputElement | null>(null);
   const selectionEpoch = useRef(0);
   const libraryEpoch = useRef(0);
   const [selectionLoading, setSelectionLoading] = useState("");
@@ -311,7 +314,8 @@ function App() {
     setJob(current => current?.result?.run_id === runId ? { ...current, result } : current);
   }
 
-  async function upload(file: File) {
+  // "review" stores the video for tagging by hand: no analysis job runs, so the result comes straight back.
+  async function upload(file: File, mode: "analysis" | "review" = "analysis") {
     if (DEMO_MODE) { setError("This is a demo. Connect the analysis API to upload your footage."); return; }
     if (busy || activeProcessing || libraryLoading) { setError("Wait for the current upload, analysis or library check to finish. You can browse existing clips while analysis runs."); return; }
     const uploadSelection = ++selectionEpoch.current;
@@ -324,7 +328,7 @@ function App() {
       body.append("file", file);
       const next = await new Promise<Job>((resolve, reject) => {
         const xhr = new XMLHttpRequest();
-        xhr.open("POST", `${API}/videos/upload`);
+        xhr.open("POST", `${API}/videos/upload${mode === "review" ? "?mode=review" : ""}`);
         for (const [name, value] of Object.entries(authHeaders())) xhr.setRequestHeader(name, value);
         xhr.upload.onprogress = event => { if (event.lengthComputable) setUploadPct(Math.round(event.loaded / event.total * 100)); };
         xhr.onerror = () => reject(new Error("Cannot reach the analysis API. Check that the backend is running."));
@@ -344,6 +348,7 @@ function App() {
       setBusy(false);
       setUploadPct(null);
       if (fileRef.current) fileRef.current.value = "";
+      if (reviewFileRef.current) reviewFileRef.current.value = "";
     }
   }
 
@@ -390,7 +395,7 @@ function App() {
   };
 
   const result = job?.result ?? null;
-  const modelResult = result?.engine === "yolo_bytetrack";
+  const modelResult = result?.engine === "yolo_bytetrack" || result?.engine === "review_only";
   const libraryVisible = !DEMO_MODE && (showLibrary || !job);
   const uploadDisabled = busy || activeProcessing || libraryLoading;
   const uploadTitle = activeProcessing ? "One video is processing. Browse saved results while it finishes." : libraryLoading ? "Checking existing analyses before accepting another upload." : "Upload football footage";
@@ -402,6 +407,7 @@ function App() {
         clipName={result?.metadata.filename ?? job?.filename ?? null}
         currentRunId={result?.run_id}
         synthetic={Boolean(result) && !modelResult && !libraryVisible}
+        reviewOnly={result?.engine === "review_only" && !libraryVisible}
         runs={libraryRuns}
         libraryLoading={libraryLoading}
         demoMode={DEMO_MODE}
@@ -473,6 +479,8 @@ function App() {
           )}
         </div>
 
+        <input ref={reviewFileRef} hidden type="file" aria-label="Upload a video to tag by hand, without analysis" accept=".mp4,.mov,.avi,.mkv,.webm,.m4v"
+          onChange={event => { const file = event.target.files?.[0]; if (file) upload(file, "review"); }} />
         {libraryVisible && (
           <Library
             runs={libraryRuns}
@@ -485,6 +493,7 @@ function App() {
             onOpen={openFromUi}
             onSample={sampleFromUi}
             onUpload={() => fileRef.current?.click()}
+            onUploadReview={capabilities?.analysis?.review_only_upload ? () => reviewFileRef.current?.click() : undefined}
             uploadDisabled={uploadDisabled}
             uploadTitle={uploadTitle}
             onDemo={REQUIRE_ACCESS_KEY ? undefined : demoFromUi}

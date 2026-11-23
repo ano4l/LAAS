@@ -7,7 +7,7 @@ import { DASH, num, pct, secs } from "../format";
 import { TeamName } from "../kits";
 import { DataTable, Disclosure, EmptyState, Field, Pager, Panel, StatTile, WatchButton } from "../ui";
 
-export function PlayersTab({ result, api, authHeaders }: ClipTabProps & { api: string; authHeaders: () => Record<string, string> }) {
+export function PlayersTab({ result, saved, api, authHeaders }: ClipTabProps & { api: string; authHeaders: () => Record<string, string> }) {
   const [profile, setProfile] = useState<string | null>(null);
   const summary = result.detection_summary;
   const m = result.metrics.video_measurements;
@@ -48,7 +48,7 @@ export function PlayersTab({ result, api, authHeaders }: ClipTabProps & { api: s
         />
       </div>
 
-      <PlayerProfiles key={result.run_id} result={result} api={api} authHeaders={authHeaders} selected={profile} onSelect={setProfile} />
+      <PlayerProfiles key={result.run_id} result={result} api={api} authHeaders={authHeaders} selected={profile} onSelect={setProfile} reviewRevision={saved?.revision} />
 
       <TrackExplorer result={result} onProfile={id => { setProfile(id); document.getElementById("player-profile")?.scrollIntoView({ block: "start" }); }} />
 
@@ -76,13 +76,15 @@ function TrackExplorer({ result, onProfile }: { result: AnalysisResult; onProfil
     .sort((a, b) => sort === "first" ? a.first_seen_ms - b.first_seen_ms : sort === "near" ? (measured.get(b.track_id)?.near_ball_frames ?? 0) - (measured.get(a.track_id)?.near_ball_frames ?? 0) : b.observations - a.observations);
   const totalPages = Math.max(1, Math.ceil(matches.length / 8));
   const current = Math.min(page, totalPages - 1);
+  const aside = result.detection_summary?.off_pitch?.tracks ?? 0;
+  const asideNote = aside ? ` ${aside} ${aside === 1 ? "person who" : "people who"} stayed off the pitch on the pitch map (coaches, substitutes, stewards) ${aside === 1 ? "was" : "were"} set aside and ${aside === 1 ? "is" : "are"} not listed.` : "";
 
   return (
     <Panel
       title={linked ? "Tracked identities" : "Tracks"}
       subtitle={linked && linking
-        ? `${linking.identities_after} identities joined automatically from ${linking.tracks_before} tracker tracks. Links are unreviewed, can join different players, and do not identify verified players.`
-        : "Track IDs can split or change. They do not identify verified players."}
+        ? `${linking.identities_after} identities joined automatically from ${linking.tracks_before} tracker tracks. Links are unreviewed, can join different players, and do not identify verified players.${asideNote}`
+        : `Track IDs can split or change. They do not identify verified players.${asideNote}`}
     >
       <div className="toolbar">
         <Field label="Search tracks"><input type="search" value={query} onChange={event => { setQuery(event.target.value); setPage(0); }} placeholder="ID, class or kit group" /></Field>

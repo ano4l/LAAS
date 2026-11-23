@@ -33,21 +33,28 @@ image = (
     .add_local_file(str(weights), "/models/football.pt", copy=True)
     .add_local_file(str(rescue_weights), "/models/ball-rescue.pt", copy=True)
     .env({"PYTHONPATH": "/app", "YOLO_MODEL_PATH": "/models/football.pt", "YOLO_DEVICE": "0",
-          "BALL_CONFIDENCE": "0.1", "OBJECT_CONFIDENCE": "0.45", "TRACKER_BACKEND":"botsort", "YOLO_BALL_RESCUE_PATH": "/models/ball-rescue.pt"})
+          "BALL_CONFIDENCE": "0.1", "OBJECT_CONFIDENCE": "0.45", "TRACKER_BACKEND":"botsort", "YOLO_BALL_RESCUE_PATH": "/models/ball-rescue.pt",
+          # People come from the general detector already shipped as the secondary ball model; the football weights keep the
+          # ball and the goalkeeper/referee labels. It found 90% of labelled players against 47% (docs/testing/DETECTOR_2026-11-22.md).
+          "YOLO_PERSON_MODEL_PATH": "/models/ball-rescue.pt"})
 )
 # Optional pitch landmark model. Without it the worker runs exactly as before and reports no pitch positions.
 if pitch_weights is not None and pitch_weights.is_file():
     image = image.add_local_file(str(pitch_weights), "/models/pitch.pt", copy=True).env({"YOLO_PITCH_MODEL_PATH": "/models/pitch.pt"})
 
 
-@app.function(image=image, gpu="L4", cpu=2, memory=8192, volumes={"/jobs": volume},
-              min_containers=0, max_containers=1, scaledown_window=2, timeout=600,
+# L4 first; an A10G when Modal has no L4 free. On 16 Nov 2026 a job waited 15 minutes for an L4 and
+# was cancelled. Both have 24 GB and run the same CUDA build; the A10G costs more per second.
+# The second detector makes a 30 s clip take about 130 to 160 s on the evaluation GPUs, so a 120 s clip needs more than the
+# former 600 s. A timeout would fail the run and still use up one of the counted attempts.
+@app.function(image=image, gpu=["L4", "A10G"], cpu=2, memory=8192, volumes={"/jobs": volume},
+              min_containers=0, max_containers=1, scaledown_window=2, timeout=1200,
               startup_timeout=180, retries=0)
 def analyze(request_id: str, profile: str = "accurate", tile_size: int = 0):
     import hashlib
     import json
     import torch
-    from workers.video.modal_policy import ARTIFACTS, reserve_attempt, validate_request, validate_video
+    from workers.video.modal_policy import ARTIFACTS, OPTIONAL_ARTIFACTS, reserve_attempt, validate_request, validate_video
     from workers.video.real_analysis import run_real_analysis, video_metadata
 
     validate_request(request_id, profile, tile_size)
@@ -70,7 +77,7 @@ def analyze(request_id: str, profile: str = "accurate", tile_size: int = 0):
     run_dir = source.parent / "outputs" / result["run_id"]
     (run_dir / "manifest.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
     hashes = {}
-    for name in ARTIFACTS:
+    for name in (*ARTIFACTS, *(name for name in OPTIONAL_ARTIFACTS if (run_dir / name).is_file())):
         with (run_dir / name).open("rb") as stream:
             hashes[name] = hashlib.file_digest(stream, "sha256").hexdigest()
     volume.commit()

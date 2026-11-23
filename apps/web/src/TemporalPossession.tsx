@@ -7,6 +7,17 @@ import { KIND_FILL, STATE_LABEL, STATE_TECHNICAL, segmentKind } from "./vocabula
 
 export type SequenceState = "controlled" | "in_transit" | "control_gap" | "team_retained" | "contested" | "unknown" | "dead_ball";
 export type SequenceInterval = { start_seconds: number; end_seconds: number; state: SequenceState; team: string | null; kit: string | null; track_id: string | null; support: string };
+/** Passes the model estimated from the ball's path on the pitch map. Estimates, never counted events. */
+export type PassEstimate = { id: string; timestamp_seconds: number; end_seconds: number; from_track: string; to_track: string; from_team: string; to_team: string;
+  outcome: "completed" | "not_completed"; length_m: number; seconds: number; fastest_m_s: number; start_m: { x: number; y: number }; end_m: { x: number; y: number } };
+export type PassEstimates = {
+  schema_version: string; status: "estimated" | "not_run"; reason?: string; accuracy_evaluated: boolean; passes: PassEstimate[];
+  played_long: { timestamp_seconds: number; from_track: string; from_team: string | null; fastest_m_s: number }[];
+  counts: { completed: number; not_completed: number; outcome_not_seen: number };
+  by_team: { team: string; attempted: number; completed: number; not_completed: number; completion_pct: number; mean_length_m: number }[];
+  by_player: { track_id: string; team: string; attempted: number; completed: number; received: number }[];
+  pairs: { team: string; from_track: string; to_track: string; passes: number }[]; limitations: string[];
+};
 export type TemporalSequences = {
   schema_version: string; review_status: string; context_revision: number; mapping_status: "anonymous_scene_groups" | "user_confirmed";
   source_duration_seconds: number; classified_non_dead_seconds: number; known_seconds: number; unknown_seconds: number; contested_seconds: number; dead_ball_seconds: number; coverage_pct: number | null;
@@ -14,6 +25,7 @@ export type TemporalSequences = {
   intervals: SequenceInterval[];
   anchors: { id: string; scene_id: number; track_id: string; kit: string | null; team: string | null; start_seconds: number; end_seconds: number; observed_seconds: number; observed_frames: number; support_type: string }[];
   candidates: { id: string; [key: string]: unknown }[];
+  passes?: PassEstimates;
   diagnostics: { anchors: number; motion_supported_touches: number; rejected_transitions: Record<string, number> };
   parameters: Record<string, number | string>; limitations: string;
   // Inferred time between two consecutive touches by the same team. Reported beside the supported totals, never inside them.

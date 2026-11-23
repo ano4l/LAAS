@@ -1,0 +1,37 @@
+LAAS Football Analytics for Windows Server 2022
+
+Analysis runs on a Modal GPU by default. If Modal cannot be reached, is not signed in, rejects the
+clip or has used up its run limit, the same job runs on this server's CPU with reduced settings
+(about 12 frames a second at 960 px) and the result says so.
+
+Install or update
+1. First install only: enable Media Foundation in Server Manager > Add Roles and Features > Features,
+   and restart if Windows asks.
+2. In Task Scheduler, stop the task "LAAS Football Analytics" if it exists.
+3. Rename any existing C:\Program Files\LAAS Football Analytics folder (keep it until the new one is
+   verified), then copy the extracted "LAAS Football Analytics" folder into C:\Program Files.
+4. First install only: in Task Scheduler, import LAAS-Startup.xml, name it "LAAS Football Analytics",
+   confirm the account is LOCAL SERVICE and save.
+5. Check the bundle before starting it, from PowerShell in the new folder:
+       .\python\python.exe -B smoke.py --compute local
+6. Start the task and open http://127.0.0.1:8000 inside Remote Desktop.
+
+Modal sign-in (once, typed by a person)
+The task runs as Local Service, which cannot read a user profile, so the token lives in ProgramData:
+       mkdir "C:\ProgramData\LAAS Football Analytics"
+       $env:MODAL_CONFIG_PATH = "C:\ProgramData\LAAS Football Analytics\modal.toml"
+       .\python\python.exe -m modal token set --token-id <id> --token-secret <secret>
+Any account on this server can read that file. Restart the task afterwards. Then:
+       .\python\python.exe -B smoke.py --compute modal      (uses one Modal run)
+
+CPU only
+Set the machine environment variable LAAS_COMPUTE=local and restart the task.
+
+Notes
+- Python 3.12, CPU dependencies, detector and pitch weights and the dashboard build are bundled.
+- NumPy is pinned to 2.3.5 and the Polars compatibility runtime is included because this server's
+  virtual CPU exposes no SSE4.2/AVX. Do not upgrade them.
+- If a native runtime DLL is missing, install the Microsoft Visual C++ Redistributable (x64).
+- Uploads, results and logs are stored under the Local Service profile:
+  C:\Windows\ServiceProfiles\LocalService\AppData\Local\LAAS Football Analytics
+- The dashboard listens on loopback only, for use inside Remote Desktop.

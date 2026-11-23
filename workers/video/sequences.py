@@ -14,7 +14,7 @@ def percentage(n, d):
     return round(100*n/d, 2) if d else None
 
 
-def infer_sequences(frames, metadata, sample_fps, context=None):
+def infer_sequences(frames, metadata, sample_fps, context=None, pitch=None):
     context = context or {}
     duration = metadata['duration_seconds']
     diagonal = math.hypot(metadata['width'], metadata['height'])
@@ -196,7 +196,7 @@ def infer_sequences(frames, metadata, sample_fps, context=None):
             ball_support_pct=percentage(support,total),missing_ball_seconds=round(missing,3),
             max_missing_ball_gap_seconds=round(longest_gap,3),
             receiver_support=b['support_type'],evidence_level='partial_tracking_review_only' if review_only else 'supported_transition',
-            possession_included=bool(same_team and strong),
+            possession_included=bool(same_team and strong),suggested_review_type='pass' if same_team else 'interception',
             quality_flags=(['partial_tracking_not_used_for_possession'] if review_only else [])+(['intermittent_ball_gaps'] if missing>1e-7 else [])+(['aerial_or_outside_ground_bridge'] if any(not f['ball']['ground'] for f in observed) else []),
             review_status='unreviewed',source=VERSION,
             evidence='Observed departure and supported receiver; bounded continuity checks. Ball gaps remain unobserved; event and team possession are estimates.'))
@@ -223,6 +223,13 @@ def infer_sequences(frames, metadata, sample_fps, context=None):
                                      support='same_team_touch_before_and_after')
                 filled = True
         retained_pairs += filled
+
+    # Shots, tackles, duels and dribbles are proposed from the same touches, kept apart from the pass and turnover candidates.
+    from workers.video.actions import detect_actions
+    actions = detect_actions(evidence, anchors, resolved, metadata, sample_fps, context, pitch)
+    # Passes and whether they reached a team-mate, estimated from the ball's path on the pitch map.
+    from workers.video.pass_estimates import estimate_passes
+    passes = estimate_passes(evidence, anchors, resolved, metadata, context, pitch)
 
     # Explicit user-confirmed stoppages split the state partition precisely;
     # absence of a detected ball is never treated as a stoppage.
@@ -284,7 +291,7 @@ def infer_sequences(frames, metadata, sample_fps, context=None):
                       observed_control_seconds=round(observed_control[t],4),flight_and_gap_seconds=round(flights[t],4),bounded_missing_ball_seconds=round(inferred[t],4)) for t,s in sorted(team_totals.items())],
         intervals=[{k:round(v,4) if isinstance(v,float) else v for k,v in r.items()} for r in intervals],
         anchors=[{k:round(v,4) if isinstance(v,float) else v for k,v in a.items() if k not in {'indices','first','last','height'}} for a in anchors],
-        candidates=candidates,diagnostics=dict(anchors=len(anchors),motion_supported_touches=sum(a['support_type']=='motion_supported_touch' for a in anchors),review_only_candidates=sum(e['evidence_level']=='partial_tracking_review_only' for e in candidates),rejected_transitions=dict(rejections)),
+        candidates=candidates,actions=actions,passes=passes,diagnostics=dict(anchors=len(anchors),motion_supported_touches=sum(a['support_type']=='motion_supported_touch' for a in anchors),review_only_candidates=sum(e['evidence_level']=='partial_tracking_review_only' for e in candidates),rejected_transitions=dict(rejections)),
         parameters=dict(min_sustained_seconds=.12,min_sustained_frames=2,max_missing_ball_gap_seconds=.25,min_transition_ball_support_pct=65,max_transition_seconds=4,
                         review_only_max_gap_seconds=.75,review_only_min_ball_support_pct=35),
         limitations='Image-based, unvalidated estimates. Team shares use known classified non-dead time only; unknown/contested time is disclosed. Only explicitly confirmed stoppages are excluded. No named identities or automatic approvals; no coordinates are invented for missing balls.')

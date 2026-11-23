@@ -34,7 +34,7 @@ def test_names_are_saved_per_source_and_one_player_can_hold_several_identities(t
     state = save_labels(path, m, payload([dict(name=" Ada Obi ", number="8", tracks=["L2", "L1"]), dict(name="Keeper", number=None, tracks=["L3"])]),
                         tracking(tmp_path / "tracking.json"))
     assert state["revision"] == 1 and state["overlap_checked"] is True and state["source"] == "human_entry"
-    assert state["players"][0] == dict(id="P1", name="Ada Obi", number="8", tracks=["L1", "L2"], kits=["kit-A"])
+    assert state["players"][0] == dict(id="P1", name="Ada Obi", number="8", tracks=["L1", "L2"], kits=["kit-A"], lineup_id=None, team=None)
     assert state["players"][1]["kits"] == []
     assert load_labels(path, m) == state
     with pytest.raises(ReviewConflict):

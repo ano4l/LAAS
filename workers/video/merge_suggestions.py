@@ -168,5 +168,8 @@ def suggest_for_run(directory, manifest):
         numbers = json.loads((directory / "shirt-numbers.json").read_text(encoding="utf-8"))
         out["shirt_numbers"] = dict(reader=numbers.get("reader"), review_status="unreviewed", limitations=numbers.get("limitations", []),
                                     proposals=[{key: p.get(key) for key in ("track_id", "proposed_number", "agreement", "confident_reads", "crops_read")}
-                                               for p in numbers.get("proposals", []) if p.get("proposed_number")])
+                                               for p in numbers.get("proposals", []) if p.get("proposed_number")],
+                                    # Every identity with confident reads, for matching against a line-up; not shown as proposals.
+                                    reads=[{key: p.get(key) for key in ("track_id", "proposed_number", "confident_reads", "crops_read", "reads")}
+                                           for p in numbers.get("proposals", []) if p.get("reads")])
     return out

@@ -4,23 +4,36 @@ import type { AnalysisResult } from "./main";
 import { DASH, num, range, secs, sentence } from "./format";
 import { TeamName, useKits } from "./kits";
 import { PitchBoard } from "./PitchBoard";
+import { candidateName, candidatePlayers } from "./VideoInsights";
 import type { MotionPlayer } from "./SoccerTrackShape";
 import { DataTable, Disclosure, EmptyState, Field, Meter, Panel, StatTile, WatchButton } from "./ui";
 
 /** A name a person gave to one or more tracked identities. Nothing here is recognised automatically. */
-type NamedPlayer = { key: string; name: string; number: string; tracks: string[] };
-type Labels = { schema_version: string; run_id: string; source_sha256: string | null; revision: number; players: { id: string; name: string; number: string | null; tracks: string[] }[]; overlap_checked: boolean | null };
+/** `lineupId` points at an entry in the line-up typed under Review; the name and number then come from there. */
+type NamedPlayer = { key: string; name: string; number: string; tracks: string[]; lineupId: string | null };
+/** One person in the video's shared roster: the line-up, the tracked identities named for them, and their approved events. */
+type RosterRow = { source: "lineup" | "tracked_only" | "event_only"; lineup_id: string | null; team: "home" | "away" | null; name: string; number: string | null;
+  position: string | null; minutes: number | null; tracks: string[]; event_count: number; counts: Record<string, number>; per_90: Record<string, number> | null };
+type VideoRoster = { teams: { home: string; away: string }; players: RosterRow[]; counts?: { listed: number; listed_with_tracks: number; tracked_only: number; event_only: number } };
+const ROSTER_SOURCE: Record<RosterRow["source"], string> = { lineup: "In the line-up", tracked_only: "Named on tracked identities only", event_only: "Named on events only" };
+type Labels = { schema_version: string; run_id: string; source_sha256: string | null; revision: number; players: { id: string; name: string; number: string | null; tracks: string[]; lineup_id?: string | null; lineup_missing?: boolean }[]; overlap_checked: boolean | null };
 type Identity = { track_id: string; object_type: string; team: string | null; first_seen_ms: number; last_seen_ms: number; fragments: number };
 /** Two identities that could be one player, for a person to check. Never applied automatically. */
 type Suggestion = { from_track: string; to_track: string; gap_seconds: number; from_last_seen_seconds: number; to_first_seen_seconds: number; same_kit: boolean | null; basis: "pitch" | "image"; distance_m: number | null; distance_heights: number | null; rivals: number; fit?: number; close_fit?: boolean };
 /** A shirt number an experimental text reader saw repeatedly on one identity. A question for a person, not a recognition. */
 type NumberProposal = { track_id: string; proposed_number: string; agreement: number; confident_reads: number; crops_read: number };
-type Suggestions = { suggestions: Suggestion[]; suggestions_total: number; appearances?: Record<string, [number, number][]>; reason?: string; shirt_numbers?: { reader: string | null; proposals: NumberProposal[] } };
+/** What an identity's shirt-number reads say once only numbers on the saved line-up can be right. Still a question for a person. */
+type LineupMatch = { track_id: string; status: "match" | "ambiguous_team" | "too_few_reads" | "not_on_sheet" | "keeper_number_on_outfield_player";
+  number: string; reads: number; confident_reads: number; one_digit?: boolean; team: "home" | "away" | null; team_basis?: string | null;
+  candidates: { team: "home" | "away"; lineup_id: string; name: string; number: string; position: string | null }[]; same_player_tracks?: string[]; kit?: string | null };
+type Suggestions = { suggestions: Suggestion[]; suggestions_total: number; appearances?: Record<string, [number, number][]>; reason?: string; shirt_numbers?: { reader: string | null; proposals: NumberProposal[]; lineup?: { status: string; matches: LineupMatch[] } } };
 type RosterEntry = { name: string; number: string | null; clips: number };
 
 const BANDS: [string, string][] = [["walking", "Standing or walking (under 2 m/s)"], ["jogging", "Jogging (2 to 4 m/s)"], ["running", "Running (4 to 5.5 m/s)"], ["fast_running", "Fast running (5.5 m/s and over)"]];
-const comparable = (players: NamedPlayer[]) => JSON.stringify(players.map(player => [player.name.trim(), player.number.trim(), [...player.tracks].sort()]));
-const fromSaved = (labels: Labels): NamedPlayer[] => labels.players.map(player => ({ key: player.id, name: player.name, number: player.number ?? "", tracks: player.tracks }));
+const comparable = (players: NamedPlayer[]) => JSON.stringify(players.map(player => [player.name.trim(), player.number.trim(), [...player.tracks].sort(), player.lineupId]));
+const fromSaved = (labels: Labels): NamedPlayer[] => labels.players.map(player => ({ key: player.id, name: player.name, number: player.number ?? "", tracks: player.tracks,
+  // A link whose line-up entry was removed is kept as a typed name; saving again drops the broken link.
+  lineupId: player.lineup_id && !player.lineup_missing ? player.lineup_id : null }));
 const title = (player: NamedPlayer) => `${player.number.trim() ? `${player.number.trim()} · ` : ""}${player.name.trim() || "Unnamed"}`;
 let nextKey = 0;
 
@@ -28,8 +41,10 @@ let nextKey = 0;
  * Everything measured for one player: either a single tracked identity, or the identities a person has
  * said are the same player. Totals add up only the time those identities were tracked.
  */
-export function PlayerProfiles({ result, api, authHeaders, selected, onSelect }: {
+export function PlayerProfiles({ result, api, authHeaders, selected, onSelect, reviewRevision }: {
   result: AnalysisResult; api: string; authHeaders: () => Record<string, string>; selected: string | null; onSelect: (trackId: string) => void;
+  /** Changes when the review, and so possibly the line-up, is saved. */
+  reviewRevision?: number;
 }) {
   const kits = useKits();
   const rosterId = useId();
@@ -85,6 +100,23 @@ export function PlayerProfiles({ result, api, authHeaders, selected, onSelect }:
       .then(response => response.ok ? response.json() : null).then(body => { if (body && Array.isArray(body.players)) setRoster(body.players as RosterEntry[]); }).catch(() => undefined);
     return () => abort.abort();
   }, [api, saved?.revision]);
+  // The shared roster: the line-up to choose from, and each listed player's approved events.
+  const [videoRoster, setVideoRoster] = useState<VideoRoster | null>(null);
+  const [newLineup, setNewLineup] = useState("");
+  useEffect(() => {
+    const abort = new AbortController();
+    fetch(`${api}/runs/${encodeURIComponent(runId)}/roster`, { headers: authHeaders(), signal: abort.signal })
+      .then(response => response.ok ? response.json() : null).then(body => { if (body && Array.isArray(body.players)) setVideoRoster(body as VideoRoster); }).catch(() => undefined);
+    return () => abort.abort();
+  }, [runId, api, saved?.revision, reviewRevision]);
+  const lineupRows = (videoRoster?.players ?? []).filter(row => row.source === "lineup" && row.lineup_id);
+  const lineupOptions = (takenBy: string | null) => videoRoster && (["home", "away"] as const).map(side => (
+    <optgroup key={side} label={videoRoster.teams[side]}>
+      {lineupRows.filter(row => row.team === side).map(row => (
+        <option key={row.lineup_id} value={row.lineup_id!} disabled={players.some(other => other.key !== takenBy && other.lineupId === row.lineup_id)}>{row.number ? `${row.number} · ` : ""}{row.name}</option>
+      ))}
+    </optgroup>
+  ));
 
   const dirty = Boolean(saved) && comparable(players) !== comparable(fromSaved(saved!));
   const owner = (trackId: string) => players.find(player => player.tracks.includes(trackId));
@@ -104,7 +136,7 @@ export function PlayerProfiles({ result, api, authHeaders, selected, onSelect }:
     if (players.some(row => row.number.trim() && !/^\d{1,2}$/.test(row.number.trim()))) { setError("A shirt number is one or two digits, or left empty."); return; }
     const request = epoch.current; setPending(true); setError("");
     try {
-      const response = await fetch(`${api}/runs/${encodeURIComponent(runId)}/players`, { method: "POST", headers: { ...authHeaders(), "Content-Type": "application/json" }, body: JSON.stringify({ revision: saved.revision, confirmed: true, players: players.filter(row => row.tracks.length).map(row => ({ name: row.name.trim(), number: row.number.trim() || null, tracks: row.tracks })) }) });
+      const response = await fetch(`${api}/runs/${encodeURIComponent(runId)}/players`, { method: "POST", headers: { ...authHeaders(), "Content-Type": "application/json" }, body: JSON.stringify({ revision: saved.revision, confirmed: true, players: players.filter(row => row.tracks.length).map(row => ({ name: row.name.trim(), number: row.number.trim() || null, tracks: row.tracks, ...(row.lineupId ? { lineup_id: row.lineupId } : {}) })) }) });
       const body = await response.json().catch(() => ({})); if (request !== epoch.current) return;
       if (response.status === 409) { setConflict(true); throw new Error("Another session changed these names. Your edits are kept here. Reload the saved names only when you are ready to discard them."); }
       if (!response.ok) throw new Error(typeof body.detail === "string" ? `${body.detail}. Nothing was saved; your edits are kept.` : `Saving failed (${response.status}). Your edits are kept.`);
@@ -131,7 +163,7 @@ export function PlayerProfiles({ result, api, authHeaders, selected, onSelect }:
       fastest: moved.length ? Math.max(...moved.map(row => row.fastest_hop_m_s)) : null,
       bands: banded.length ? BANDS.map(([key]) => banded.reduce((sum, row) => sum + (row.speed_band_seconds?.[key] ?? 0), 0)) : null,
       ownSpells, spellSeconds: ownSpells.reduce((sum, spell) => sum + spell.observed_seconds, 0),
-      events: candidates.filter(event => ids.includes(event.from_track) || ids.includes(event.to_track)).sort((a, b) => a.timestamp_seconds - b.timestamp_seconds),
+      events: candidates.filter(event => (event.from_track !== null && ids.includes(event.from_track)) || (event.to_track !== null && ids.includes(event.to_track))).sort((a, b) => a.timestamp_seconds - b.timestamp_seconds),
     };
   }
 
@@ -142,6 +174,7 @@ export function PlayerProfiles({ result, api, authHeaders, selected, onSelect }:
   const placedSeconds = moved.reduce((sum, row) => sum + row.placed_seconds, 0);
   const kitIds = [...new Set(trackIds.map(id => byId.get(id)?.team).filter((team): team is string => Boolean(team)))];
   const heading = player ? title(player) : `Unnamed · ${current}`;
+  const linkedRow = player?.lineupId ? lineupRows.find(row => row.lineup_id === player.lineupId) : undefined;
   const status = pending ? "Working…" : dirty ? "Unsaved names" : saved ? (saved.players.length ? `${saved.players.length} named · saved version ${saved.revision}` : "No names saved") : "Names not loaded";
   const spans = trackIds.flatMap(id => suggested?.appearances?.[id] ?? (byId.get(id) ? [[byId.get(id)!.first_seen_ms / 1000, byId.get(id)!.last_seen_ms / 1000] as [number, number]] : []));
   const share = (seconds: number) => `${Math.max(0, Math.min(100, 100 * seconds / Math.max(duration, .001)))}%`;
@@ -163,6 +196,15 @@ export function PlayerProfiles({ result, api, authHeaders, selected, onSelect }:
   </>;
 
   const readNumbers = (suggested?.shirt_numbers?.proposals ?? []).filter(row => trackIds.includes(row.track_id));
+  const lineupMatches = (suggested?.shirt_numbers?.lineup?.matches ?? []).filter(row => trackIds.includes(row.track_id) && row.status !== "too_few_reads");
+  // Puts an identity under a line-up player. It only edits the names on screen: the reviewer still confirms and saves.
+  function chooseLineup(trackId: string, who: LineupMatch["candidates"][number]) {
+    const holder = players.find(row => row.lineupId === who.lineup_id);
+    if (holder) { if (!holder.tracks.includes(trackId)) edit(holder.key, { tracks: [...holder.tracks, trackId] }); return; }
+    const mine = owner(trackId);
+    if (mine) edit(mine.key, { lineupId: who.lineup_id, name: who.name, number: who.number });
+    else change([...players, { key: `new-${nextKey++}`, name: who.name, number: who.number, tracks: [trackId], lineupId: who.lineup_id }]);
+  }
 
   function join(row: Suggestion) {
     const mine = trackIds.includes(row.from_track) ? row.from_track : row.to_track, theirs = mine === row.from_track ? row.to_track : row.from_track;
@@ -200,6 +242,26 @@ export function PlayerProfiles({ result, api, authHeaders, selected, onSelect }:
       aside={<span className="muted">{status}</span>}
     >
       <div className="stack" id="player-profile" aria-busy={pending}>
+        {videoRoster && videoRoster.players.length > 0 && (
+          <Disclosure variant="panel" summary="Roster for this video" meta={`${videoRoster.players.length} ${videoRoster.players.length === 1 ? "person" : "people"}${videoRoster.counts ? ` · ${videoRoster.counts.listed_with_tracks} of ${videoRoster.counts.listed} listed players tracked` : ""}`}>
+            <p>Everyone a person has named for this video, from the line-up, the tracked identities and the approved events. A link between them exists only where someone made it.</p>
+            <DataTable label="Roster for this video" stack>
+              <thead><tr><th scope="col">Player</th><th scope="col">Team</th><th scope="col">Named where</th><th scope="col" className="num">Tracked identities</th><th scope="col" className="num">Approved events</th><th scope="col">Profile</th></tr></thead>
+              <tbody>
+                {videoRoster.players.map((row, index) => (
+                  <tr key={`${row.source}-${row.lineup_id ?? row.name}-${index}`}>
+                    <th scope="row">{row.number ? `${row.number} · ` : ""}{row.name}{row.position ? <small>{row.position}</small> : null}</th>
+                    <td data-label="Team">{row.team ? videoRoster.teams[row.team] : "Not known"}</td>
+                    <td data-label="Named where">{ROSTER_SOURCE[row.source]}</td>
+                    <td data-label="Tracked identities" className="num">{row.tracks.length || DASH}</td>
+                    <td data-label="Approved events" className="num">{row.event_count || DASH}</td>
+                    <td data-label="Profile">{row.tracks.length && byId.has(row.tracks[0]) ? <button type="button" className="btn btn--secondary btn--sm" onClick={() => onSelect(row.tracks[0])}>Open profile</button> : <span className="muted">No tracked identity</span>}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </DataTable>
+          </Disclosure>
+        )}
         <div className="toolbar">
           <Field label="Show profile for"><select value={current ?? ""} onChange={event => onSelect(event.target.value)}>{options}</select></Field>
           <Field label="Compare with">
@@ -214,7 +276,23 @@ export function PlayerProfiles({ result, api, authHeaders, selected, onSelect }:
             {" · "}{trackIds.length === 1 ? `Tracked identity ${trackIds[0]}` : `${trackIds.length} tracked identities: ${trackIds.join(", ")}`}
             {kitIds.length > 1 && " · These identities were sorted into different kit groups. Check the name against the footage."}
           </p>
+          {linkedRow && videoRoster && (
+            <p className="note">
+              In the line-up for {videoRoster.teams[linkedRow.team!]}{linkedRow.position ? ` · ${linkedRow.position}` : ""}{linkedRow.minutes != null ? ` · ${num(linkedRow.minutes)} minutes in this video` : ""}.
+            </p>
+          )}
         </div>
+
+        {linkedRow && (
+          <div className="stack stack--sm">
+            <h4>Approved events</h4>
+            {linkedRow.event_count > 0 ? <>
+              <p className="facts">{Object.entries(linkedRow.counts).map(([type, total]) => <span key={type}>{sentence(type)}<b>{total}</b></span>)}</p>
+              {linkedRow.per_90 && <p className="note">Per 90 minutes: {Object.entries(linkedRow.per_90).map(([type, value]) => `${type} ${num(value)}`).join(" · ")}.</p>}
+            </> : <p className="note">No approved event names this player yet.</p>}
+            <p className="note">Recorded and approved by a person under Review, and matched to this player through the line-up. They are counted separately from the automatic estimates on this page.</p>
+          </div>
+        )}
 
         {readNumbers.length > 0 && (
           <div className="note note--boxed">
@@ -231,6 +309,36 @@ export function PlayerProfiles({ result, api, authHeaders, selected, onSelect }:
               ))}
             </ul>
             {!player && <p>“Use” fills in the number below; the player still needs a name before anything is saved.</p>}
+          </div>
+        )}
+
+        {lineupMatches.length > 0 && videoRoster && (
+          <div className="note note--boxed">
+            <p>The same reads, checked against the line-up saved under Review. A match says only that the digits are a number on the team sheet. This check has not been scored against labelled footage, so watch the player before using it.</p>
+            <ul className="itemlist">
+              {lineupMatches.map(row => {
+                const who = row.candidates[0], teams = videoRoster.teams;
+                return (
+                  <li key={row.track_id}>
+                    <span>
+                      <span className="mono">{row.track_id}</span>: read <strong>{row.number}</strong> in {row.reads} of {row.confident_reads} confident reads.{" "}
+                      {row.status === "match" && <>On the line-up, {row.number} is <strong>{who.name}</strong> ({teams[who.team]}).
+                        {row.one_digit && " One-digit reads are often wrong, so this is a weak match."}
+                        {row.team_basis === "number_worn_on_one_team_only" && " Only one team lists this number; which team this identity is on is not otherwise known."}
+                        {row.same_player_tracks?.length ? ` The same player was also read on ${row.same_player_tracks.join(", ")}: possibly one player split by the tracker.` : ""}</>}
+                      {row.status === "ambiguous_team" && `Both teams list ${row.number}: ${row.candidates.map(entry => `${entry.name} (${teams[entry.team]})`).join(" and ")}. ${row.kit ? "Name one player from this identity’s kit group first, and the team will be known." : "This identity has no kit group, so its team cannot be worked out from the others."}`}
+                      {row.status === "not_on_sheet" && `Nobody on the saved line-up wears ${row.number}${row.team ? ` for ${teams[row.team]}` : ""}. It may be a misread, or the line-up may be incomplete.`}
+                      {row.status === "keeper_number_on_outfield_player" && `The line-up gives ${row.number} to a goalkeeper, but this identity is not classed as one. It is probably a misread.`}
+                    </span>
+                    <span className="row">
+                      <WatchButton at={(byId.get(row.track_id)?.first_seen_ms ?? 0) / 1000} label="Watch" describe={`Watch ${row.track_id} to check the number`} />
+                      {row.status === "match" && <button type="button" className="btn btn--secondary btn--sm" disabled={pending || !saved} onClick={() => chooseLineup(row.track_id, who)}>This is {who.name}</button>}
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+            <p>“This is…” puts the identity under that player in the names below. Nothing is saved until you confirm and save.</p>
           </div>
         )}
 
@@ -326,23 +434,24 @@ export function PlayerProfiles({ result, api, authHeaders, selected, onSelect }:
 
         {own.events.length > 0 && (
           <div className="stack stack--sm">
-            <h4>Possible passes and handovers</h4>
-            <p className="note">Moments where the ball appears to move between this player and another. These are unreviewed candidates from the model, not confirmed events.</p>
+            <h4>Possible events</h4>
+            <p className="note">Possible passes, turnovers, shots, tackles, duels and dribbles this player appears in. These are unreviewed prompts from rules over the tracking, not confirmed events, and they miss most real ones.</p>
             <ul className="itemlist">
               {own.events.slice(0, 12).map(event => {
-                const gave = trackIds.includes(event.from_track), partner = gave ? event.to_track : event.from_track;
+                const gave = event.from_track !== null && trackIds.includes(event.from_track), partner = gave ? event.to_track : event.from_track;
+                const transfer = event.type === "possible_pass" || event.type === "possible_turnover";
                 return (
                   <li key={event.id}>
-                    <span><span className="mono">{secs(event.timestamp_seconds)}</span> · {sentence(event.type)} · {gave ? "to" : "from"} {nameOf(partner)}</span>
+                    <span><span className="mono">{secs(event.timestamp_seconds)}</span> · {candidateName(event.type)} · {transfer && partner ? `${gave ? "to" : "from"} ${nameOf(partner)}` : candidatePlayers(event, nameOf)}</span>
                     <span className="row">
                       <WatchButton at={event.start_seconds} label="Watch" describe={`Watch the candidate at ${secs(event.timestamp_seconds)}`} />
-                      {byId.has(partner) && !trackIds.includes(partner) && <button type="button" className="btn btn--secondary btn--sm" onClick={() => onSelect(partner)}>Open {partner}</button>}
+                      {partner && byId.has(partner) && !trackIds.includes(partner) && <button type="button" className="btn btn--secondary btn--sm" onClick={() => onSelect(partner)}>Open {partner}</button>}
                     </span>
                   </li>
                 );
               })}
             </ul>
-            {own.events.length > 12 && <p className="note">Showing the first 12 of {own.events.length}. All candidates are listed under Possession.</p>}
+            {own.events.length > 12 && <p className="note">Showing the first 12 of {own.events.length}. All of them are listed under Ball.</p>}
           </div>
         )}
 
@@ -407,10 +516,20 @@ export function PlayerProfiles({ result, api, authHeaders, selected, onSelect }:
             <legend className="sr-only">Name for {heading}</legend>
             <p className="muted">Watch the footage first. Type a name only when you can tell who this is. The tracker often splits one player into several identities, so you can add more identities to the same player.{roster.length ? " Names you saved on other clips are offered as you type; picking one does not match anyone automatically." : ""}</p>
             <datalist id={rosterId}>{[...new Set(roster.map(entry => entry.name))].map(name => <option key={name} value={name} />)}</datalist>
+            {!lineupRows.length && <p className="note">No line-up is saved for this video. List it under Review to choose players from it here, and to see their approved events beside these figures.</p>}
             {player ? <>
+              {lineupRows.length > 0 && (
+                <Field label="Who this is, from the line-up">
+                  <select value={player.lineupId ?? ""} onChange={event => { const row = lineupRows.find(entry => entry.lineup_id === event.target.value); edit(player.key, row ? { lineupId: row.lineup_id, name: row.name, number: row.number ?? "" } : { lineupId: null }); }}>
+                    <option value="">Not in the line-up (type a name)</option>
+                    {lineupOptions(player.key)}
+                  </select>
+                </Field>
+              )}
+              {player.lineupId && <p className="note">The name and number come from the line-up. Change them under Review.</p>}
               <div className="formgrid formgrid--two">
-                <Field label="Player name"><input maxLength={80} list={rosterId} value={player.name} onChange={event => { const known = pickKnown(event.target.value); edit(player.key, known && !player.number ? { name: event.target.value, number: known.number ?? "" } : { name: event.target.value }); }} /></Field>
-                <Field label="Shirt number (optional)"><input inputMode="numeric" maxLength={2} value={player.number} onChange={event => edit(player.key, { number: event.target.value })} /></Field>
+                <Field label="Player name"><input maxLength={80} list={rosterId} readOnly={Boolean(player.lineupId)} value={player.name} onChange={event => { const known = pickKnown(event.target.value); edit(player.key, known && !player.number ? { name: event.target.value, number: known.number ?? "" } : { name: event.target.value }); }} /></Field>
+                <Field label="Shirt number (optional)"><input inputMode="numeric" maxLength={2} readOnly={Boolean(player.lineupId)} value={player.number} onChange={event => edit(player.key, { number: event.target.value })} /></Field>
               </div>
               {unnamed.length > 0 && (
                 <Field label="Add another tracked identity to this player">
@@ -422,12 +541,20 @@ export function PlayerProfiles({ result, api, authHeaders, selected, onSelect }:
               )}
               <div><button type="button" className="btn btn--secondary btn--danger" onClick={() => change(players.filter(row => row.key !== player.key))}>Remove this name</button></div>
             </> : current && <>
+              {lineupRows.length > 0 && (
+                <Field label="Who this is, from the line-up">
+                  <select value={newLineup} onChange={event => { const row = lineupRows.find(entry => entry.lineup_id === event.target.value); setNewLineup(row?.lineup_id ?? ""); if (row) { setNewName(row.name); setNewNumber(row.number ?? ""); } }}>
+                    <option value="">Not in the line-up (type a name)</option>
+                    {lineupOptions(null)}
+                  </select>
+                </Field>
+              )}
               <div className="formgrid formgrid--two">
-                <Field label="Player name"><input maxLength={80} list={rosterId} value={newName} onChange={event => { const known = pickKnown(event.target.value); setNewName(event.target.value); if (known && !newNumber) setNewNumber(known.number ?? ""); }} /></Field>
-                <Field label="Shirt number (optional)"><input inputMode="numeric" maxLength={2} value={newNumber} onChange={event => setNewNumber(event.target.value)} /></Field>
+                <Field label="Player name"><input maxLength={80} list={rosterId} readOnly={Boolean(newLineup)} value={newName} onChange={event => { const known = pickKnown(event.target.value); setNewName(event.target.value); if (known && !newNumber) setNewNumber(known.number ?? ""); }} /></Field>
+                <Field label="Shirt number (optional)"><input inputMode="numeric" maxLength={2} readOnly={Boolean(newLineup)} value={newNumber} onChange={event => setNewNumber(event.target.value)} /></Field>
               </div>
               <div className="row">
-                <button type="button" className="btn btn--secondary" disabled={!newName.trim()} onClick={() => { change([...players, { key: `new-${nextKey++}`, name: newName, number: newNumber, tracks: [current] }]); setNewName(""); setNewNumber(""); }}>Use this name for {current}</button>
+                <button type="button" className="btn btn--secondary" disabled={!newName.trim()} onClick={() => { change([...players, { key: `new-${nextKey++}`, name: newName, number: newNumber, tracks: [current], lineupId: newLineup || null }]); setNewName(""); setNewNumber(""); setNewLineup(""); }}>Use this name for {current}</button>
               </div>
               {players.length > 0 && (
                 <Field label={`Or add ${current} to a player already named`}>

@@ -14,7 +14,7 @@ from uuid import uuid4
 
 import cv2
 
-from workers.video.yolo_adapter import model_path, pitch_model_path, yolo_capabilities
+from workers.video.yolo_adapter import model_path, person_model_path, pitch_model_path, yolo_capabilities
 from workers.video.detector import FootballDetector
 from workers.video.accuracy import analysis_settings
 from workers.video import insights as video_insights, measurements as video_measurements
@@ -40,6 +40,31 @@ def video_metadata(path: Path) -> dict:
         capture.release()
 
 
+def physical_cores():
+    """Physical core count without extra packages; logical count where it cannot be read."""
+    try:
+        import ctypes
+        kernel, size = ctypes.windll.kernel32, ctypes.c_ulong(0)
+        kernel.GetLogicalProcessorInformationEx(0, None, ctypes.byref(size))  # 0 = one record per core
+        buffer = ctypes.create_string_buffer(size.value)
+        if not kernel.GetLogicalProcessorInformationEx(0, buffer, ctypes.byref(size)):
+            raise OSError
+        count = offset = 0
+        while offset < size.value:
+            count += 1
+            offset += int.from_bytes(buffer.raw[offset + 4:offset + 8], "little")  # record length
+        return count or os.cpu_count() or 1
+    except Exception:
+        return os.cpu_count() or 1
+
+
+def cpu_threads():
+    """YOLO_CPU_THREADS if set, otherwise one thread per physical core (hyper-threads do not help inference)."""
+    if os.getenv("YOLO_CPU_THREADS"):
+        return max(1, int(os.environ["YOLO_CPU_THREADS"]))
+    return physical_cores()
+
+
 def run_real_analysis(input_video: Path, output_root: Path, progress=None) -> dict:
     caps = yolo_capabilities(ROOT)
     if not caps["available"]:
@@ -54,20 +79,29 @@ def run_real_analysis(input_video: Path, output_root: Path, progress=None) -> di
     if progress:
         progress("Loading detector and ByteTrack", 0.03)
     device = os.getenv("YOLO_DEVICE", "0" if torch.cuda.is_available() else "cpu")
-    if device == "cpu":
-        torch.set_num_threads(max(1, int(os.getenv("YOLO_CPU_THREADS", "4"))))
+    threads = cpu_threads() if device == "cpu" else None
+    if threads:
+        torch.set_num_threads(threads)
     options = analysis_settings(metadata["fps"])
     stride, image_size = options["stride"], options["image_size"]
+    # ANNOTATED_FRAMES=analysed writes only the analysed frames to the playback video (same duration,
+    # lower frame rate), so the frames in between are never converted, resized or encoded.
+    annotated_frames = os.getenv("ANNOTATED_FRAMES", "all")
+    if annotated_frames not in {"all", "analysed"}:
+        raise ValueError("ANNOTATED_FRAMES must be all or analysed")
+    sparse = annotated_frames == "analysed" and stride > 1
     ball_weights = Path(os.environ["YOLO_BALL_MODEL_PATH"]).expanduser().resolve() if os.getenv("YOLO_BALL_MODEL_PATH") else None
     rescue_weights = Path(os.environ['YOLO_BALL_RESCUE_PATH']).expanduser().resolve() if os.getenv('YOLO_BALL_RESCUE_PATH') else None
     ball_confidence = float(os.getenv("BALL_CONFIDENCE", "0.1"))
     object_confidence = float(os.getenv("OBJECT_CONFIDENCE", "0.45"))
     if not 0 < ball_confidence <= 1 or not 0 < object_confidence <= 1:
         raise ValueError("Detection confidence thresholds must be greater than 0 and at most 1.")
+    person_weights = person_model_path(ROOT)
     detector = FootballDetector(model_path(ROOT), device=device, image_size=image_size,
                                 ball_confidence=ball_confidence, object_confidence=object_confidence,
                                 sample_fps=metadata["fps"] / stride, ball_weights=ball_weights,
-                                tile_size=options["tile_size"],ball_rescue_weights=rescue_weights)
+                                tile_size=options["tile_size"],ball_rescue_weights=rescue_weights,
+                                person_weights=person_weights)
     pitch_weights = pitch_model_path(ROOT)
     pitch_model = None
     if pitch_weights:
@@ -98,13 +132,19 @@ def run_real_analysis(input_video: Path, output_root: Path, progress=None) -> di
         with (out_dir / "encoder.log").open("wb") as log, (out_dir / "tracking.json").open("w", encoding="utf-8") as tracking_file:
             encoder = subprocess.Popen([imageio_ffmpeg.get_ffmpeg_exe(), "-y", "-f", "rawvideo",
                 "-vcodec", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{out_w}x{out_h}",
-                "-r", str(metadata["fps"]), "-i", "-", "-an", "-c:v", "libx264",
+                "-r", str(metadata["fps"] / stride if sparse else metadata["fps"]), "-i", "-", "-an", "-c:v", "libx264",
                 "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p", "-movflags", "+faststart",
                 str(out_dir / "annotated.mp4")], stdin=subprocess.PIPE, stderr=log, stdout=subprocess.DEVNULL)
             tracking_file.write("[\n")
             first = True
             try:
                 while True:
+                    if sparse and decoded % stride:
+                        # Advance the decoder without building the image; this frame is neither analysed nor shown.
+                        if not capture.grab():
+                            break
+                        decoded += 1
+                        continue
                     ok, frame = capture.read()
                     if not ok:
                         break
@@ -177,6 +217,28 @@ def run_real_analysis(input_video: Path, output_root: Path, progress=None) -> di
             progress("Linking fragmented tracks", 0.96)
         # Image-based camera motion is used for the ball path. Track linking keeps its own
         # estimate from player movement, which measured better for joining player tracks.
+        # With a general person detector the football weights name a referee or goalkeeper in only some frames of a track,
+        # so each track is given one role from all its frames before tracks are linked into identities.
+        from workers.video import off_pitch
+        from workers.video.people_boxes import PERSON_KINDS, apply_roles, settle_roles
+        roles, role_changes, settled = {}, 0, {}
+        if getattr(detector, "person_model", None):
+            roles = settled = settle_roles(link_rows, detector.default_role)
+        # The pitch calibration is steadied over the clip here, before linking, so that people who stand off the pitch
+        # throughout (coaches, substitutes, stewards) can be set aside and never become player identities.
+        pitch_document, bystanders = None, {}
+        if pitch_model:
+            from workers.video.pitch_keypoints import document
+            with pitch_weights.open("rb") as weights:
+                pitch_document = document(pitch_frames, pitch_weights.name, hashlib.file_digest(weights, "sha256").hexdigest(), stride * pitch_stride,
+                                          (metadata["width"], metadata["height"], metadata["fps"]))
+            (out_dir / "pitch-calibration.json").write_text(json.dumps(pitch_document), encoding="utf-8")
+            bystanders = off_pitch.settle(link_rows, pitch_frames, keep={track for track, role in settled.items() if role == "referee"})
+            roles = {**roles, **bystanders}
+        if roles:
+            apply_roles(link_rows, roles)
+            apply_roles(preview, roles)
+            track_classes.update({track: role for track, role in roles.items() if track in track_classes})
         camera = CameraMotion.from_warps(warps, warp_scenes) if warps else CameraMotion.from_people(link_rows)
         (out_dir / "camera-motion.json").write_text(json.dumps(dict(source=camera.source, warps=warps, scenes=warp_scenes)), encoding="utf-8")
         linking = link_tracks(link_rows, appearance.descriptors(), metadata["fps"], embeddings=appearance.embeddings())
@@ -185,17 +247,15 @@ def run_real_analysis(input_video: Path, output_root: Path, progress=None) -> di
         write_links(out_dir, linking)
         # Analytics are computed after linking so they follow linked identities, not raw tracker IDs.
         linked_rows = json.loads((out_dir / "tracking.json").read_text(encoding="utf-8"))
+        if roles:
+            role_changes = apply_roles(linked_rows, roles)
+            ball_kinds = {kind: n for kind, n in counts.items() if kind not in PERSON_KINDS}
+            counts = Counter(row["object_type"] for row in linked_rows if row["object_type"] in PERSON_KINDS | {off_pitch.ROLE})
+            counts.update(ball_kinds)
         # Choose the ball path over the whole clip, then store the rows analytics will read.
-        ball_path = select_ball_path(linked_rows, metadata, camera=camera)
+        ball_path = select_ball_path(linked_rows, metadata, camera=camera, pitch=pitch_frames if pitch_model else None)
         write_rows(out_dir / "tracking.json", linked_rows)
         scope = dict(sample_fps=metadata["fps"] / stride, decoded_frames=decoded)
-        pitch_document = None
-        if pitch_model:
-            from workers.video.pitch_keypoints import document
-            with pitch_weights.open("rb") as weights:
-                pitch_document = document(pitch_frames, pitch_weights.name, hashlib.file_digest(weights, "sha256").hexdigest(), stride * pitch_stride,
-                                          (metadata["width"], metadata["height"], metadata["fps"]))
-            (out_dir / "pitch-calibration.json").write_text(json.dumps(pitch_document), encoding="utf-8")
         warnings = ["Detections and track IDs are unreviewed model predictions, not verified player identities.",
                     "Jersey groups are anonymous colour estimates, not verified teams. Passes, tackles, shots, goals, possession and xG are not verified.",
                     "Coordinates are image pixels. Distance, speed and pitch heatmaps require camera calibration.",
@@ -217,8 +277,10 @@ def run_real_analysis(input_video: Path, output_root: Path, progress=None) -> di
                        detections_by_class=dict(counts), unique_tracks=len(track_counts), ball_detected_frames=ball_frames,
                        processing_seconds=round(time.monotonic() - started, 2), device=device,
                        model=model_path(ROOT).name, model_classes=detector.names,
+                       inference_runtime="onnxruntime" if model_path(ROOT).suffix.lower() == ".onnx" else "pytorch",
                        image_size=image_size, ball_confidence=ball_confidence, object_confidence=object_confidence,
                        analysis_profile=options["profile"], ball_tile_size=options["tile_size"],
+                       annotated_frames="analysed" if sparse else "all", cpu_threads=threads,
                        tracks=[dict(track_id=key, object_type=track_classes[key], observations=n,
                                     first_seen_ms=first_seen[key], last_seen_ms=last_seen[key])
                                for key, n in track_counts.most_common()])
@@ -235,6 +297,17 @@ def run_real_analysis(input_video: Path, output_root: Path, progress=None) -> di
         summary["pitch_calibration"] = ({key: pitch_document[key] for key in ("schema_version", "method", "model", "model_sha256", "frame_stride", "assumed_pitch", "summary")}
                                         if pitch_document else dict(status="not_run", reason="No pitch landmark model is configured."))
         summary["linked_tracks"] = linking["identities"]
+        if person_weights:
+            with person_weights.open('rb') as stream:
+                summary['person_model_sha256']=hashlib.file_digest(stream,'sha256').hexdigest()
+            summary['person_model']=person_weights.name
+            summary['person_detection']='People come from a general person detector; the football weights supply the ball and the goalkeeper and referee labels. Each track has one role, settled from all its frames; role_hint keeps what each frame was called.'
+            summary['role_settling']=dict(tracks=len(settled),referee_tracks=sum(role=='referee' for role in settled.values()),
+                                          goalkeeper_tracks=sum(role=='goalkeeper' for role in settled.values()),rows_changed=role_changes)
+        summary['off_pitch']=(dict(status='applied',tracks=len(bystanders),observations=counts.get(off_pitch.ROLE,0),
+                                   rule=dict(margin_m=off_pitch.MARGIN_M,min_frames=off_pitch.MIN_FRAMES,min_share=off_pitch.MIN_SHARE),
+                                   note='Tracks whose foot point stays outside the pitch outline are set aside as off_pitch and are not players. It relies on the pitch calibration.')
+                              if pitch_document else dict(status='not_run',reason='No pitch calibration, so people beside the pitch are not told apart from players.'))
         if rescue_weights:
             with rescue_weights.open('rb') as stream:
                 summary['secondary_ball_model_sha256']=hashlib.file_digest(stream,'sha256').hexdigest()

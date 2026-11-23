@@ -228,6 +228,13 @@ def create_gateway(volume, analyze, access_key, root=Path("/jobs"), call_lookup=
             path,manifest=review_location(run_id)
             return load_review(path,manifest)
 
+    @app.get('/runs/{run_id}/review/approved-events',dependencies=[Depends(authorized)])
+    def get_approved_events(run_id:str):
+        from workers.video.event_review import load_review,approved_export
+        with review_lock:
+            path,manifest=review_location(run_id)
+            return approved_export(load_review(path,manifest),manifest)
+
     @app.get('/runs/{run_id}/sequence-context',dependencies=[Depends(authorized)])
     def get_sequence_context(run_id:str):
         from workers.video.sequence_context import load_context
@@ -252,7 +259,33 @@ def create_gateway(volume, analyze, access_key, root=Path("/jobs"), call_lookup=
         from workers.video.player_labels import load_labels
         with review_lock:
             path,manifest=review_location(run_id)
-            try:return load_labels(path.with_name('player-labels.json'),manifest)
+            try:
+                from workers.video.event_review import load_review
+                from workers.video.video_roster import refresh_labels
+                return refresh_labels(load_labels(path.with_name('player-labels.json'),manifest),load_review(path,manifest)['lineups'])
+            except ValueError as exc:raise HTTPException(422,str(exc)) from exc
+
+    @app.get('/runs/{run_id}/roster',dependencies=[Depends(authorized)])
+    def get_video_roster(run_id:str):
+        from workers.video.event_review import load_review
+        from workers.video.player_labels import load_labels
+        from workers.video.video_roster import video_roster
+        with review_lock:
+            path,manifest=review_location(run_id)
+            try:return video_roster(load_review(path,manifest),load_labels(path.with_name('player-labels.json'),manifest))
+            except ValueError as exc:raise HTTPException(422,str(exc)) from exc
+
+    @app.get('/runs/{run_id}/players/near-ball',dependencies=[Depends(authorized)])
+    def get_players_near_ball(run_id:str,t:float):
+        from workers.video.event_review import load_review
+        from workers.video.player_labels import load_labels
+        from workers.video.tagging_hints import load_frames,near_ball
+        from workers.video.video_roster import refresh_labels
+        with review_lock:
+            path,manifest=review_location(run_id)
+            try:
+                labels=refresh_labels(load_labels(path.with_name('player-labels.json'),manifest),load_review(path,manifest)['lineups'])
+                return near_ball(load_frames(path.with_name('tracking.json')),manifest['metadata'].get('fps') or 0,t,labels)
             except ValueError as exc:raise HTTPException(422,str(exc)) from exc
 
     @app.get('/roster',dependencies=[Depends(authorized)])
@@ -265,7 +298,14 @@ def create_gateway(volume, analyze, access_key, root=Path("/jobs"), call_lookup=
     def get_merge_suggestions(run_id:str):
         from workers.video.merge_suggestions import suggest_for_run
         path,manifest=review_location(run_id)
-        return suggest_for_run(path.parent,manifest)
+        out=suggest_for_run(path.parent,manifest)
+        if out.get('shirt_numbers'):
+            from workers.video.event_review import load_review
+            from workers.video.player_labels import load_labels
+            from workers.video.video_roster import lineup_number_matches
+            with review_lock:
+                out['shirt_numbers']=lineup_number_matches(out['shirt_numbers'],load_review(path,manifest),load_labels(path.with_name('player-labels.json'),manifest),manifest)
+        return out
 
     @app.post('/runs/{run_id}/players',dependencies=[Depends(authorized)])
     def put_player_labels(run_id:str,payload:dict):
@@ -273,7 +313,9 @@ def create_gateway(volume, analyze, access_key, root=Path("/jobs"), call_lookup=
         from workers.video.event_review import ReviewConflict
         with review_lock:
             path,manifest=review_location(run_id)
-            try:state=save_labels(path.with_name('player-labels.json'),manifest,payload,path.with_name('tracking.json'))
+            try:
+                from workers.video.event_review import load_review
+                state=save_labels(path.with_name('player-labels.json'),manifest,payload,path.with_name('tracking.json'),load_review(path,manifest)['lineups'])
             except ReviewConflict as exc:raise HTTPException(409,str(exc)) from exc
             except ValueError as exc:raise HTTPException(422,str(exc)) from exc
             volume.commit()

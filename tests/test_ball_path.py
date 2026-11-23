@@ -71,3 +71,27 @@ def test_camera_motion_stabilises_pan_and_zoom_and_restarts_at_scene_cuts():
               for f in range(3) for k in range(5)]
     fallback = CameraMotion.from_people(people)
     assert fallback.source == "tracked_people_median" and np.allclose(fallback.stabilise(2, (60, 30)), (50, 30))
+
+
+# Ten image pixels to a metre, so the penalty spots are at (110, 340) and (940, 340) px and the centre spot at (525, 340).
+PITCH = {f: dict(status="calibrated", matrix=[[.1, 0, 0], [0, .1, 0], [0, 0, 1]]) for f in range(60)}
+
+
+def test_a_painted_penalty_spot_is_not_the_ball_even_when_it_is_detected_confidently():
+    spot = [ball(f, 942, 338, .8) for f in range(60)]
+    real = [ball(f, 300 + 12 * f, 600, .6) for f in range(60)]
+    rows = spot + real
+    assert select_ball_path(rows, META)["selected"] == 60 and all(r["ball_selected"] for r in spot)   # without a pitch map the spot wins
+    summary = select_ball_path(rows, META, pitch=PITCH)
+    assert summary["painted_spot_candidates_rejected"] == 60 and summary["selected"] == 60
+    assert all(not r["ball_selected"] and r["ball_rejected"] == "painted_spot" for r in spot) and all(r["ball_selected"] for r in real)
+
+
+def test_a_ball_on_the_centre_spot_with_a_player_over_it_and_a_ball_rolling_across_a_spot_are_kept():
+    kick_off = [ball(f, 525, 340, .8) for f in range(60)]
+    taker = [dict(frame_idx=f, object_type="player", track_id="T1", bbox=[525, 285, 545, 345], confidence=.9) for f in range(60)]
+    rows = kick_off + taker
+    summary = select_ball_path(rows, META, pitch=PITCH)
+    assert summary["painted_spot_candidates_rejected"] == 0 and summary["selected"] == 60
+    rolling = [ball(f, 880 + 4 * f, 340, .8) for f in range(30)]   # 10 m/s straight over the penalty spot
+    assert select_ball_path(rolling, META, pitch=PITCH)["painted_spot_candidates_rejected"] == 0
