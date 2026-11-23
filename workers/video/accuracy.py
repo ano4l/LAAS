@@ -3,12 +3,18 @@ import math
 import os
 
 
+# profile: (analysis fps, detector image size). None analyses every source frame.
+# balanced is the CPU setting between the two: its stride works out at 12.5, 10, 12.5 and 12 fps for 25, 30, 50 and 60 fps footage.
+PROFILES = dict(accurate=(None, 1280), balanced=(12.5, 960), preview=(5, 640))
+
+
 def analysis_settings(source_fps):
     profile = os.getenv("ANALYSIS_PROFILE", "accurate")
-    if profile not in {"accurate", "preview"}:
-        raise ValueError("ANALYSIS_PROFILE must be accurate or preview")
-    fps = float(os.getenv("ANALYSIS_FPS", str(source_fps if profile == "accurate" else 5)))
-    size = int(os.getenv("YOLO_IMAGE_SIZE", "1280" if profile == "accurate" else "640"))
+    if profile not in PROFILES:
+        raise ValueError("ANALYSIS_PROFILE must be accurate, balanced or preview")
+    default_fps, default_size = PROFILES[profile]
+    fps = float(os.getenv("ANALYSIS_FPS", str(default_fps or source_fps)))
+    size = int(os.getenv("YOLO_IMAGE_SIZE", str(default_size)))
     tile = int(os.getenv("BALL_TILE_SIZE", "0"))
     if not math.isfinite(fps) or fps <= 0 or size < 32 or size % 32 or tile < 0 or (tile and tile < 128):
         raise ValueError("FPS must be positive and finite; image size a multiple of 32; tile size 0 or at least 128")

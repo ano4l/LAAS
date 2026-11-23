@@ -12,7 +12,8 @@ class FootballDetector:
     def __init__(self,weights:Path,*,device,image_size,ball_confidence,object_confidence,
                  sample_fps,ball_weights=None,tile_size=0,ball_rescue_weights=None,person_weights=None):
         from ultralytics import YOLO
-        self.model=YOLO(str(weights));self.names=self.model.names
+        # A .onnx export is the same network run by ONNX Runtime; it needs the task stated.
+        self.model=YOLO(str(weights),task='detect') if str(weights).lower().endswith('.onnx') else YOLO(str(weights));self.names=self.model.names
         self.ball_model=YOLO(str(ball_weights)) if ball_weights else None
         self.rescue_model=YOLO(str(ball_rescue_weights)) if ball_rescue_weights else None
         # A general person detector finds players the football weights miss or box in pieces on closer views

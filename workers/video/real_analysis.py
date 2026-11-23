@@ -40,6 +40,31 @@ def video_metadata(path: Path) -> dict:
         capture.release()
 
 
+def physical_cores():
+    """Physical core count without extra packages; logical count where it cannot be read."""
+    try:
+        import ctypes
+        kernel, size = ctypes.windll.kernel32, ctypes.c_ulong(0)
+        kernel.GetLogicalProcessorInformationEx(0, None, ctypes.byref(size))  # 0 = one record per core
+        buffer = ctypes.create_string_buffer(size.value)
+        if not kernel.GetLogicalProcessorInformationEx(0, buffer, ctypes.byref(size)):
+            raise OSError
+        count = offset = 0
+        while offset < size.value:
+            count += 1
+            offset += int.from_bytes(buffer.raw[offset + 4:offset + 8], "little")  # record length
+        return count or os.cpu_count() or 1
+    except Exception:
+        return os.cpu_count() or 1
+
+
+def cpu_threads():
+    """YOLO_CPU_THREADS if set, otherwise one thread per physical core (hyper-threads do not help inference)."""
+    if os.getenv("YOLO_CPU_THREADS"):
+        return max(1, int(os.environ["YOLO_CPU_THREADS"]))
+    return physical_cores()
+
+
 def run_real_analysis(input_video: Path, output_root: Path, progress=None) -> dict:
     caps = yolo_capabilities(ROOT)
     if not caps["available"]:
@@ -54,10 +79,17 @@ def run_real_analysis(input_video: Path, output_root: Path, progress=None) -> di
     if progress:
         progress("Loading detector and ByteTrack", 0.03)
     device = os.getenv("YOLO_DEVICE", "0" if torch.cuda.is_available() else "cpu")
-    if device == "cpu":
-        torch.set_num_threads(max(1, int(os.getenv("YOLO_CPU_THREADS", "4"))))
+    threads = cpu_threads() if device == "cpu" else None
+    if threads:
+        torch.set_num_threads(threads)
     options = analysis_settings(metadata["fps"])
     stride, image_size = options["stride"], options["image_size"]
+    # ANNOTATED_FRAMES=analysed writes only the analysed frames to the playback video (same duration,
+    # lower frame rate), so the frames in between are never converted, resized or encoded.
+    annotated_frames = os.getenv("ANNOTATED_FRAMES", "all")
+    if annotated_frames not in {"all", "analysed"}:
+        raise ValueError("ANNOTATED_FRAMES must be all or analysed")
+    sparse = annotated_frames == "analysed" and stride > 1
     ball_weights = Path(os.environ["YOLO_BALL_MODEL_PATH"]).expanduser().resolve() if os.getenv("YOLO_BALL_MODEL_PATH") else None
     rescue_weights = Path(os.environ['YOLO_BALL_RESCUE_PATH']).expanduser().resolve() if os.getenv('YOLO_BALL_RESCUE_PATH') else None
     ball_confidence = float(os.getenv("BALL_CONFIDENCE", "0.1"))
@@ -100,13 +132,19 @@ def run_real_analysis(input_video: Path, output_root: Path, progress=None) -> di
         with (out_dir / "encoder.log").open("wb") as log, (out_dir / "tracking.json").open("w", encoding="utf-8") as tracking_file:
             encoder = subprocess.Popen([imageio_ffmpeg.get_ffmpeg_exe(), "-y", "-f", "rawvideo",
                 "-vcodec", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{out_w}x{out_h}",
-                "-r", str(metadata["fps"]), "-i", "-", "-an", "-c:v", "libx264",
+                "-r", str(metadata["fps"] / stride if sparse else metadata["fps"]), "-i", "-", "-an", "-c:v", "libx264",
                 "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p", "-movflags", "+faststart",
                 str(out_dir / "annotated.mp4")], stdin=subprocess.PIPE, stderr=log, stdout=subprocess.DEVNULL)
             tracking_file.write("[\n")
             first = True
             try:
                 while True:
+                    if sparse and decoded % stride:
+                        # Advance the decoder without building the image; this frame is neither analysed nor shown.
+                        if not capture.grab():
+                            break
+                        decoded += 1
+                        continue
                     ok, frame = capture.read()
                     if not ok:
                         break
@@ -239,8 +277,10 @@ def run_real_analysis(input_video: Path, output_root: Path, progress=None) -> di
                        detections_by_class=dict(counts), unique_tracks=len(track_counts), ball_detected_frames=ball_frames,
                        processing_seconds=round(time.monotonic() - started, 2), device=device,
                        model=model_path(ROOT).name, model_classes=detector.names,
+                       inference_runtime="onnxruntime" if model_path(ROOT).suffix.lower() == ".onnx" else "pytorch",
                        image_size=image_size, ball_confidence=ball_confidence, object_confidence=object_confidence,
                        analysis_profile=options["profile"], ball_tile_size=options["tile_size"],
+                       annotated_frames="analysed" if sparse else "all", cpu_threads=threads,
                        tracks=[dict(track_id=key, object_type=track_classes[key], observations=n,
                                     first_seen_ms=first_seen[key], last_seen_ms=last_seen[key])
                                for key, n in track_counts.most_common()])

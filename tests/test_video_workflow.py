@@ -131,8 +131,10 @@ def test_restart_recovers_interrupted_jobs_and_processing_error_is_saved(client,
     assert main.repository.list_runs() == []
 
 
-def test_streaming_preserves_full_duration_and_unknown_identity(tmp_path, monkeypatch):
+@pytest.mark.parametrize("annotated", ["all", "analysed"])
+def test_streaming_preserves_full_duration_and_unknown_identity(tmp_path, monkeypatch, annotated):
     monkeypatch.setenv("ANALYSIS_PROFILE", "preview")
+    monkeypatch.setenv("ANNOTATED_FRAMES", annotated)
     # A controlled detector checks pipeline plumbing, not model accuracy.
     class Detector:
         names = {0: "player"}
@@ -175,8 +177,10 @@ def test_streaming_preserves_full_duration_and_unknown_identity(tmp_path, monkey
     assert (run / "track-links.json").is_file()
     assert all(row["coordinate_space"] == "image_pixels" for row in tracking)
     output = real_analysis.video_metadata(run / "annotated.mp4")
-    assert output["frame_count"] == 1005
+    # Writing only analysed frames keeps the duration and drops the frame rate; nothing analysed is lost.
+    assert output["frame_count"] == (1005 if annotated == "all" else 201)
     assert output["duration_seconds"] == pytest.approx(40.2)
+    assert summary["annotated_frames"] == annotated
 
 
 @pytest.mark.parametrize("visible_player", [True, False])

@@ -131,7 +131,7 @@ def upload_video(background_tasks: BackgroundTasks, file: UploadFile = File(...)
     _save_upload(file, target)
     try:
         metadata = video_metadata(target)
-        if mode == "analysis" and os.getenv("ANALYSIS_COMPUTE", "local") == "modal":
+        if mode == "analysis" and os.getenv("ANALYSIS_COMPUTE", "local") == "modal" and os.getenv("ANALYSIS_FALLBACK", "none") != "local":
             from workers.video.modal_policy import validate_video
             validate_video(target, metadata)
     except ValueError as exc:
