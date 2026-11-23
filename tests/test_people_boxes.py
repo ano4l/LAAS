@@ -64,7 +64,7 @@ def test_the_pipeline_takes_people_from_the_person_detector_and_roles_from_the_f
 
         def predict(self, frame, classes=None, **kwargs):
             if self.general:   # whole people, as a general detector gives them
-                data = [[100, 40, 140, 200, .9, 0], [198, 58, 238, 192, .8, 0]]
+                data = [[100, 40, 140, 200, .9, 0], [198, 58, 238, 192, .8, 0], [250, 100, 256, 106, .6, 32], [20, 20, 26, 26, .05, 32]]
             else:              # the football weights box one player in two pieces, and the referee whole
                 data = [[100, 40, 140, 115, .7, 1], [100, 125, 140, 200, .6, 1], [200, 60, 236, 190, .9, 2], [50, 50, 54, 54, .5, 0]]
             data = [d for d in data if classes is None or d[5] in classes]
@@ -75,10 +75,13 @@ def test_the_pipeline_takes_people_from_the_person_detector_and_roles_from_the_f
     detector = FootballDetector(tmp_path / "football.pt", device="cpu", image_size=640, ball_confidence=.1, object_confidence=.45,
                                 sample_fps=25, person_weights=tmp_path / "person.pt")
     rows = detector.detect(frame)
-    people = sorted((r for r in rows if r["object_type"] != "ball"), key=lambda r: r["bbox"][0])
+    people = sorted((r for r in rows if r["object_type"] not in {"ball", "sports ball"}), key=lambda r: r["bbox"][0])
     assert [(r["bbox"], r["object_type"], r["model_role"]) for r in people] == [([100, 40, 140, 200], "player", "person_detector"), ([198, 58, 238, 192], "referee", "person_detector")]
     assert [r["bbox"] for r in rows if r["object_type"] == "ball"] == [[50, 50, 54, 54]]
+    # The general model's ball class comes from the same pass and joins the football weights' ball as a candidate.
+    assert [(r["bbox"], r["model_role"]) for r in rows if r["object_type"] == "sports ball"] == [([250, 100, 256, 106], "general_ball_detector")]
     assert detector.quality_counts["general_people"] == 2 and detector.quality_counts["roles_from_football_model"] == 1
+    assert detector.quality_counts["general_ball_candidates"] == 1
     # Without a person detector the football weights' own boxes are used, as before.
     plain = FootballDetector(tmp_path / "football.pt", device="cpu", image_size=640, ball_confidence=.1, object_confidence=.45, sample_fps=25)
     assert len([r for r in plain.detect(frame) if r["object_type"] != "ball"]) == 3

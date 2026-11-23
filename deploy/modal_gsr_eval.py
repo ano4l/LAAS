@@ -181,7 +181,8 @@ def _score(sequence, label=""):
     target = DATA / sequence
     run_dir = next((target / _named("outputs", label)).iterdir())
     rows = json.loads((run_dir / "tracking.json").read_text(encoding="utf-8"))
-    labels = gb.load_labels(json.loads((target / "Labels-GameState.json").read_text(encoding="utf-8")))
+    document = json.loads((target / "Labels-GameState.json").read_text(encoding="utf-8"))
+    labels = gb.load_labels(document)
     pitch = None
     if (run_dir / "pitch-calibration.json").is_file():
         pitch = {int(k): v for k, v in json.loads((run_dir / "pitch-calibration.json").read_text(encoding="utf-8")).get("frames", {}).items()}
@@ -191,6 +192,21 @@ def _score(sequence, label=""):
     numbers = json.loads(numbers_path.read_text(encoding="utf-8")) if numbers_path.is_file() else None
     manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8")) if (run_dir / "manifest.json").is_file() else {}
     report = gb.score(rows, labels, pitch, suggestions, numbers)
+    from workers.video import ball_benchmark as bb
+    balls, people_boxes = bb.load_balls(document)
+    report["ball"] = bb.score(rows, balls, people_boxes, labels["frame_count"])
+    # The same detections with the ball path chosen again by the code in this checkout, so a change to the
+    # path rules can be measured without running the detector again.
+    import copy
+    from workers.video.ball_path import select_ball_path
+    from workers.video.camera_motion import CameraMotion
+    again = copy.deepcopy(rows)
+    motion = json.loads((run_dir / "camera-motion.json").read_text(encoding="utf-8")) if (run_dir / "camera-motion.json").is_file() else {}
+    warps = {int(k): v for k, v in (motion.get("warps") or {}).items()}
+    camera = CameraMotion.from_warps(warps, {int(k): v for k, v in (motion.get("scenes") or {}).items()}) if warps else None
+    path = select_ball_path(again, manifest.get("metadata") or dict(fps=labels["fps"], width=1920, height=1080), camera=camera, pitch=pitch)
+    report["ball_path_again"] = dict(bb.score(again, balls, people_boxes, labels["frame_count"]),
+                                     path={k: path.get(k) for k in ("version", "selected", "segments", "static_candidates_rejected", "painted_spot_candidates_rejected")})
     report["run"] = dict(metadata={k: manifest.get("metadata", {}).get(k) for k in ("width", "height", "fps", "frame_count", "duration_seconds")},
                          calibration_summary=((manifest.get("detection_summary") or {}).get("pitch_calibration") or {}).get("summary"),
                          linking=(manifest.get("detection_summary") or {}).get("track_linking"),
